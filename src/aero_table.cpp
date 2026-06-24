@@ -268,18 +268,19 @@ AeroLookup AeroTable::lookup(double alpha, double beta, double mach) const {
 
   int a0, a1, b0, b1, m0, m1;
   double fa, fb, fm;
-  bool clamped = false;
-  bracket(alphas_, alpha, a0, a1, fa, clamped);
-  bracket(betas_, beta, b0, b1, fb, clamped);
-  bracket(machs_, mach, m0, m1, fm, clamped);
-  out.clamped = clamped;
+  bool ca = false, cb = false, cm = false;  // per-axis: query fell off-grid
+  bracket(alphas_, alpha, a0, a1, fa, ca);
+  bracket(betas_, beta, b0, b1, fb, cb);
+  bracket(machs_, mach, m0, m1, fm, cm);
+  out.clamped = ca || cb || cm;
 
-  if (clamped) {
+  if (out.clamped) {
     static int warn_count = 0;
     if (warn_count < 20) {
       std::cerr << "[aero_table] WARNING: query (alpha=" << alpha
                 << " rad, beta=" << beta << " rad, Mach=" << mach
-                << ") off-grid; clamped (no extrapolation across swept axes)."
+                << ") off-grid; linearly extrapolated from the nearest boundary "
+                   "node via its analytic derivative."
                 << std::endl;
       if (++warn_count == 20)
         std::cerr << "[aero_table] (further off-grid warnings suppressed)"
@@ -325,13 +326,19 @@ AeroLookup AeroTable::lookup(double alpha, double beta, double mach) const {
     out.d.d_ctrl[g] = (1 - fa) * c0 + fa * c1;
   }
 
-  // Reference point for the derivative buildup (see header): for a swept axis
-  // use the query value so the residual term vanishes (base interpolation
-  // already carries the dependence); for a degenerate single-node axis use the
-  // node value so the derivative gives a local linear correction.
-  out.alpha_ref = (alphas_.size() > 1) ? alpha : alphas_[0];
-  out.beta_ref  = (betas_.size() > 1) ? beta : betas_[0];
-  out.mach_ref  = (machs_.size() > 1) ? mach : machs_[0];
+  // Reference point for the derivative buildup (see header). Three cases per
+  // axis:
+  //   * degenerate single-node axis: ref = the node value, so d/d(.) gives a
+  //     local linear correction about that node (e.g. a single-Mach table);
+  //   * query INSIDE the grid: ref = the query value, so the residual term
+  //     vanishes and the trilinear base interpolation carries the dependence;
+  //   * query OFF the grid (clamped to a boundary node): ref = that boundary
+  //     node value, so the residual term  d/d(.) * (query - node)  becomes a
+  //     first-order LINEAR EXTRAPOLATION from the nearest node, using the
+  //     analytic derivative the .stab provides there (rather than a flat clamp).
+  out.alpha_ref = (alphas_.size() == 1) ? alphas_[0] : (ca ? alphas_[a0] : alpha);
+  out.beta_ref  = (betas_.size() == 1)  ? betas_[0]  : (cb ? betas_[b0]  : beta);
+  out.mach_ref  = (machs_.size() == 1)  ? machs_[0]  : (cm ? machs_[m0]  : mach);
   return out;
 }
 

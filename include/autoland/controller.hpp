@@ -1,5 +1,6 @@
 #pragma once
 #include "autoland/config.hpp"
+#include "autoland/nominal_controller.hpp"
 #include "autoland/trim.hpp"
 #include "autoland/types.hpp"
 
@@ -22,18 +23,9 @@
 // =============================================================================
 namespace autoland {
 
-struct ControllerOutputs {
-  CtrlVec u{CtrlVec::Zero()};  // absolute virtual controls [de, da, dr, dT]
-  // References / internals, exposed for logging:
-  double V_cmd{0};
-  double h_ref{0};
-  double theta_cmd{0};
-  double phi_cmd{0};
-  double w_cmd{0};   // commanded sink rate (flare), positive down
-  bool flaring{false};
-};
+// ControllerOutputs is defined in nominal_controller.hpp (shared abstract layer).
 
-class Controller {
+class Controller : public NominalController {
  public:
   Controller(const Gains& gains, const FlareParams& flare,
              const TrimResult& trim, double V_app, double gamma_app,
@@ -42,7 +34,8 @@ class Controller {
 
   // Advance one control step. range_to_go is the horizontal distance to the
   // touchdown point [m]; dt is the step [s]. x is the absolute state.
-  ControllerOutputs step(const StateVec& x, double range_to_go, double dt);
+  ControllerOutputs step(const StateVec& x, double range_to_go,
+                         double dt) override;
 
  private:
   Gains g_;

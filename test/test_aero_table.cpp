@@ -83,10 +83,23 @@ TEST_CASE("bilinear interpolation hits the analytic midpoint", "[aero_table]") {
   CHECK_FALSE(L.clamped);
 }
 
-TEST_CASE("off-grid queries clamp and flag, never extrapolate", "[aero_table]") {
+TEST_CASE("off-grid queries linearly extrapolate from the boundary node",
+          "[aero_table]") {
   AeroTable t = AeroTable::fromFile(kStab);
-  AeroLookup L = t.lookup(-20.0 * kDeg2Rad, -10.0 * kDeg2Rad, 0.059);
-  CHECK(L.clamped);
-  // Clamped to the alpha=-10 boundary node.
+  const double a_query = -20.0 * kDeg2Rad;  // below the alpha grid front (-10 deg)
+  AeroLookup L = t.lookup(a_query, -10.0 * kDeg2Rad, 0.059);
+  CHECK(L.clamped);  // flagged as off-grid
+
+  // Base is taken at the alpha=-10 boundary node (not extrapolated)...
   CHECK(L.d.base[CFZ] == Approx(-0.5759537).epsilon(1e-5));
+  // ...and the reference is the boundary node, so the derivative term in
+  // aeroCoeffs,  d_alpha * (alpha - alpha_ref),  becomes a first-order linear
+  // extrapolation away from that node (nonzero) rather than a flat clamp.
+  CHECK(L.alpha_ref == Approx(-10.0 * kDeg2Rad).epsilon(1e-9));
+  CHECK(L.alpha_ref != Approx(a_query));
+
+  // The reconstructed coefficient extrapolates: base + d_alpha*(query - node).
+  const double cfz_extrap =
+      L.d.base[CFZ] + L.d.d_alpha[CFZ] * (a_query - L.alpha_ref);
+  CHECK(cfz_extrap != Approx(L.d.base[CFZ]));  // not a flat clamp
 }

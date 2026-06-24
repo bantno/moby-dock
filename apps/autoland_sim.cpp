@@ -13,7 +13,7 @@
 // ./autoland_log.csv. Plot the result with scripts/plot_results.py.
 int main(int argc, char** argv) {
   const std::string data = AUTOLAND_DATA_DIR;
-  std::string stab = data + "/example.stab";
+  std::string stab = data + "/AHAB_sweep.stab";
   std::string aircraft = data + "/aircraft.yaml";
   std::string scenario = data + "/scenario.yaml";
   std::string out = "autoland_log.csv";

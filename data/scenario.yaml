@@ -58,3 +58,33 @@ initial:
   dy:       10.0      # start 10 m left/right of centerline [m]
   dpsi_deg: 0.0       # initial heading error [deg]
   dV:       1.0       # start 1 m/s fast [m/s]
+
+# --- Nominal controller -------------------------------------------------------
+# cascaded_pid : full autoland (airspeed/glideslope/pitch + lateral + flare).
+# lon_glideslope: minimal longitudinal glide-slope law, NO flare (doc A.2). Use
+#                 to demo the nominal-controller swap; the flare is meant to
+#                 emerge from the descent-rate CBF once promoted to an HOCBF.
+nominal: cascaded_pid
+
+# --- CBF safety filter (longitudinal, actuator-level basic CBF) ---------------
+# Filters {delta_e, delta_T} via an OSQP QP. The airspeed barrier is relative
+# degree 1 and actively shapes the command; the descent-rate barrier is high
+# relative degree under direct elevator, so it is slacked here and awaits an
+# HOCBF (see documentation/water_landing_cbf.md A.3-A.5).
+cbf:
+  enabled:          true
+  airspeed_barrier: true
+  descent_barrier:  true
+  # Hard = no slack, the CBF row must hold exactly; soft = penalized slack.
+  # descent is high relative degree under direct elevator, so a hard form can be
+  # momentarily infeasible -- the filter then softens all barriers for that step.
+  airspeed_hard:    false
+  descent_hard:     true
+  V_min:        15.0    # stall-margin airspeed [m/s] (<=0 => 0.85*V_app)
+  alpha_V:      2.0     # class-K gain for the airspeed barrier
+  v_safe:       0.6     # hull-safe touchdown sink rate [m/s]
+  a_brk:        3.0     # braking deceleration for the descent envelope [m/s^2]
+  alpha_h:      1.0     # class-K gain for the descent barrier
+  w_de:         1.0     # QP weight on elevator deviation
+  w_dT:         1.0     # QP weight on throttle deviation
+  slack_penalty: 10000.0

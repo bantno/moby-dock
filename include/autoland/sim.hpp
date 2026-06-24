@@ -5,10 +5,12 @@
 #include "autoland/aero_table.hpp"
 #include "autoland/cbf.hpp"
 #include "autoland/config.hpp"
+#include "autoland/control_affine_model.hpp"
 #include "autoland/controller.hpp"
 #include "autoland/dynamics.hpp"
 #include "autoland/linear_model.hpp"
 #include "autoland/mixing.hpp"
+#include "autoland/nominal_controller.hpp"
 #include "autoland/trim.hpp"
 
 // =============================================================================
@@ -56,9 +58,12 @@ class Sim {
   LinearModel lin_;
   CBFFilter cbf_;
 
-  // Candidate CBF barriers (currently passed to the pass-through filter).
+  // CBF barriers active in the safety filter (built from CBFParams).
   std::vector<Barrier> barriers_;
-  void buildCandidateBarriers();
+  void buildBarriers();
+
+  // Construct the nominal controller selected by the scenario config.
+  std::unique_ptr<NominalController> makeNominal() const;
 };
 
 }  // namespace autoland

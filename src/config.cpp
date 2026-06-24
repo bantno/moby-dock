@@ -143,6 +143,34 @@ ScenarioConfig loadScenarioConfig(const std::string& path) {
     s.init.dV = get<double>(ic, "dV", 0.0);
   }
 
+  // --- Nominal controller selection -----------------------------------------
+  const std::string nom = get<std::string>(root, "nominal", "cascaded_pid");
+  if (nom == "lon_glideslope")
+    s.nominal = NominalKind::LonGlideslope;
+  else if (nom == "cascaded_pid")
+    s.nominal = NominalKind::CascadedPID;
+  else
+    throw std::runtime_error("config: unknown 'nominal' value '" + nom +
+                             "' (expected cascaded_pid | lon_glideslope)");
+
+  // --- CBF safety-filter parameters -----------------------------------------
+  const YAML::Node cbf = root["cbf"];
+  if (cbf) {
+    s.cbf.enabled = get<bool>(cbf, "enabled", true);
+    s.cbf.airspeed_barrier = get<bool>(cbf, "airspeed_barrier", true);
+    s.cbf.descent_barrier = get<bool>(cbf, "descent_barrier", true);
+    s.cbf.airspeed_hard = get<bool>(cbf, "airspeed_hard", false);
+    s.cbf.descent_hard = get<bool>(cbf, "descent_hard", true);
+    s.cbf.V_min = get<double>(cbf, "V_min", 0.0);
+    s.cbf.alpha_V = get<double>(cbf, "alpha_V", 1.0);
+    s.cbf.v_safe = get<double>(cbf, "v_safe", 0.6);
+    s.cbf.a_brk = get<double>(cbf, "a_brk", 3.0);
+    s.cbf.alpha_h = get<double>(cbf, "alpha_h", 1.0);
+    s.cbf.w_de = get<double>(cbf, "w_de", 1.0);
+    s.cbf.w_dT = get<double>(cbf, "w_dT", 1.0);
+    s.cbf.slack_penalty = get<double>(cbf, "slack_penalty", 1.0e4);
+  }
+
   return s;
 }
 

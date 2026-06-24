@@ -55,6 +55,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
+# --- OSQP (quadratic-program solver backing the CBF safety filter) -----------
+# Linked privately into autoland_core; only qp_solver.cpp includes <osqp.h>, so
+# OSQP is an implementation detail and does not leak into the public headers.
+set(OSQP_BUILD_DEMO_EXE OFF CACHE BOOL "" FORCE)
+set(UNITTESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  osqp
+  GIT_REPOSITORY https://github.com/osqp/osqp.git
+  GIT_TAG v0.6.3
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(osqp)
+
 # -----------------------------------------------------------------------------
 # Core library: every module lives here so tests, the app, and (later) a
 # nonlinear plant or CBF-QP all link against the same single source of truth.
@@ -67,11 +80,14 @@ add_library(autoland_core
   src/trim.cpp
   src/linear_model.cpp
   src/controller.cpp
+  src/nominal_lon_glideslope.cpp
+  src/qp_solver.cpp
   src/cbf.cpp
   src/sim.cpp
 )
 target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(autoland_core PUBLIC eigen_headers yaml-cpp::yaml-cpp)
+target_link_libraries(autoland_core PRIVATE osqpstatic)
 target_compile_options(autoland_core PRIVATE -Wall -Wextra)
 
 # Path to the bundled data directory, so the app/tests can find configs by default.
@@ -95,6 +111,7 @@ add_executable(unit_tests
   test/test_aero_table.cpp
   test/test_trim.cpp
   test/test_linear_model.cpp
+  test/test_cbf.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)

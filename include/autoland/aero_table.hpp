@@ -53,16 +53,19 @@ struct AeroDerivs {
 
 // Result of an interpolated query. alpha_ref/beta_ref/mach_ref are the points
 // about which the caller should apply the (angle/Mach) derivative buildup:
-// for a swept axis they equal the query value (so the residual term is zero and
-// the interpolated base already carries the dependence); for a degenerate
-// single-node axis (e.g. a single-Mach table) they equal the node value so the
-// derivative provides a local linear correction. See Dynamics::aeroCoeffs().
+//   * swept axis, query inside the grid: ref == query value, so the residual
+//     term is zero and the interpolated base already carries the dependence;
+//   * degenerate single-node axis (e.g. a single-Mach table): ref == node
+//     value, so the derivative provides a local linear correction;
+//   * query OFF the grid: ref == the nearest boundary node value, so the
+//     residual term becomes a first-order linear extrapolation from that node.
+// See Dynamics::aeroCoeffs().
 struct AeroLookup {
   AeroDerivs d;
   double alpha_ref{0.0};
   double beta_ref{0.0};
   double mach_ref{0.0};
-  bool clamped{false};  // query fell outside the grid and was clamped
+  bool clamped{false};  // query fell outside the grid (linearly extrapolated)
 };
 
 class AeroTable {
@@ -71,8 +74,11 @@ class AeroTable {
   static AeroTable fromFile(const std::string& path);
 
   // Trilinear interpolation at (alpha[rad], beta[rad], Mach). Off-grid queries
-  // are clamped to the grid boundary and a (rate-limited) warning is emitted;
-  // the model never silently extrapolates across the swept axes.
+  // are LINEARLY EXTRAPOLATED from the nearest boundary node using that node's
+  // analytic angle/Mach derivative (realized via alpha_ref/beta_ref/mach_ref in
+  // the AeroLookup; see Dynamics::aeroCoeffs), and a rate-limited warning is
+  // emitted. The base is still taken at the boundary node (not extrapolated);
+  // only the first-order derivative term extends beyond the grid.
   AeroLookup lookup(double alpha, double beta, double mach) const;
 
   // Reference geometry (model units == metres for this model).

@@ -98,6 +98,32 @@ struct InitCond {
   double dV{0};        // initial airspeed error [m/s]
 };
 
+// CBF safety-filter parameters (longitudinal, actuator-level first pass).
+// See cbf.hpp and documentation/water_landing_cbf.md (A.3-A.5).
+struct CBFParams {
+  bool enabled{true};
+  bool airspeed_barrier{true};   // b_V = V - V_min   (works: relative degree 1)
+  bool descent_barrier{true};    // b = v + sqrt(v_safe^2 + 2 a_brk h)
+  // Hard (no slack, must hold exactly) vs soft (penalized slack) enforcement.
+  // The descent barrier is high relative degree under direct elevator, so a
+  // hard form can be momentarily infeasible; the filter then recovers by
+  // softening all barriers for that step (see CBFFilter::lastFeasibilityRecovery).
+  bool airspeed_hard{false};
+  bool descent_hard{true};
+  double V_min{0.0};     // stall-margin airspeed [m/s]; <= 0 => 0.85 * V_app
+  double alpha_V{1.0};   // class-K gain for the airspeed barrier
+  double v_safe{0.6};    // hull-safe touchdown sink rate [m/s]
+  double a_brk{3.0};     // braking deceleration for the descent envelope [m/s^2]
+  double alpha_h{1.0};   // class-K gain for the descent barrier
+  double w_de{1.0};      // QP weight on elevator deviation
+  double w_dT{1.0};      // QP weight on throttle deviation
+  double slack_penalty{1.0e4};  // rho on each barrier's slack^2
+};
+
+// Which nominal controller the sim instantiates (the swap seam, see
+// nominal_controller.hpp).
+enum class NominalKind { CascadedPID, LonGlideslope };
+
 struct ScenarioConfig {
   double V_app{0};     // target approach airspeed [m/s]
   double gamma_app{0}; // target flight-path angle [rad] (negative = descent)
@@ -105,6 +131,8 @@ struct ScenarioConfig {
   Gains gains;
   FlareParams flare;
   InitCond init;
+  CBFParams cbf;
+  NominalKind nominal{NominalKind::CascadedPID};
   double dt{0.01};     // integrator step [s]
   double t_max{120.0}; // max sim duration [s]
 };
