@@ -1,0 +1,60 @@
+# =============================================================================
+# Approach / autoland scenario.
+#
+# NOTE on glide-path angle: the VSPAero aero for this model is "clean" (no hull
+# drag), so its L/D is high and the idle glide angle is shallow. A descent
+# steeper than ~2 deg would require thrust BELOW idle (a speedbrake) to hold
+# airspeed, which the simple thrust model cannot provide -- trim throttle would
+# go negative. gamma_app is therefore set shallow so trim throttle stays
+# positive and the frontside airspeed loop has authority in both directions.
+# Add hull/flap drag to the aero model to fly a steeper, more realistic slope.
+#
+# All gains are PLACEHOLDER tuning for a stable demo; retune for your aircraft.
+# =============================================================================
+
+V_app: 18.0          # approach airspeed [m/s]
+gamma_app_deg: -1.5  # flight-path angle [deg] (negative = descent); see note
+h_decrab: 1.5        # engage decrab + wings-level below this height AGL [m]
+
+dt:    0.01          # integrator step [s]
+t_max: 60.0          # max sim duration [s]
+
+# --- Cascaded-PID gains (frontside) ------------------------------------------
+gains:
+  # Airspeed loop: PI on V error -> throttle
+  Kp_V: 0.10
+  Ki_V: 0.02
+  # Glidepath outer loop -> theta_cmd (altitude error + sink-rate damping).
+  # Kd_gs is reused during flare as the sink-rate error -> pitch gain.
+  Kp_gs: 0.010        # rad per m of altitude error
+  Kd_gs: 0.12         # rad per (m/s) of sink-rate error
+  # Pitch inner loop -> delta_e
+  Kp_theta: 3.0
+  Ki_theta: 0.8
+  Kq:       0.8       # pitch-rate damping
+  # Cross-track loop -> phi_cmd (PD; Kd_y damps the double integrator)
+  Kp_y: 0.020
+  Kd_y: 0.070
+  Ki_y: 0.000
+  phi_max_deg: 25.0
+  # Roll inner loop -> delta_a
+  Kp_phi: 2.5
+  Kp_p:   0.4         # roll-rate damping
+  # Yaw damper -> delta_r
+  Kr: 0.4
+  # Decrab: sideslip -> delta_r near touchdown
+  Kp_beta: 1.5
+
+# --- Flare law ----------------------------------------------------------------
+flare:
+  h_flare: 2.0        # flare engage height AGL [m]
+  tau:     1.5        # sink-rate decay time constant [s]
+  w_td:    0.4        # target touchdown sink rate (positive down) [m/s]
+
+# --- Initial condition on a stabilized approach -------------------------------
+initial:
+  distance: 400.0     # horizontal distance to touchdown [m]
+  dh:       5.0       # start 5 m high vs glideslope [m]
+  dy:       10.0      # start 10 m left/right of centerline [m]
+  dpsi_deg: 0.0       # initial heading error [deg]
+  dV:       1.0       # start 1 m/s fast [m/s]

@@ -1,0 +1,83 @@
+# =============================================================================
+# Aircraft configuration -- AHAB V-tail flying-boat seaplane UAV.
+#
+# Units: SI throughout (kg, m, s, rad unless a key says *_deg).
+# Reference geometry (Sref/Cref/Bref) and the moment reference point come from
+# the .stab (Sref=0.425 m^2, Cref=0.25 m, Bref=1.7 m, Xcg=0.445 m); they are NOT
+# repeated here to keep one source of truth.
+#
+# !!! TODO (USER MUST CONFIRM) !!!
+#   * inertia: mass + Ixx/Iyy/Izz/Ixz below are PLACEHOLDERS sized only to make
+#     trim and the demo run. Replace with measured/CAD values.
+#   * mixing: the default name-based map (Elevator<-de, Ailerons<-da, Rudder<-dr)
+#     is used because the .stab exposes those groups directly. Confirm this is
+#     how the OpenVSP control groups are defined, or set 'mixing.matrix' below.
+#   * thrust: default static-thrust-with-velocity-falloff params are placeholders
+#     pending thrust-stand data.
+# =============================================================================
+
+# --- Mass properties --- TODO: PLACEHOLDER VALUES, REPLACE -------------------
+inertia:
+  mass: 4.0      # kg            TODO
+  Ixx:  0.50     # kg m^2        TODO
+  Iyy:  0.40     # kg m^2        TODO
+  Izz:  0.80     # kg m^2        TODO
+  Ixz:  0.02     # kg m^2        TODO
+
+# --- c.g. offset from the .stab moment reference (body axes) ------------------
+# Zero => true c.g. coincides with the .stab Xcg/Ycg/Zcg reference point.
+cg_offset:
+  dx: 0.0        # m   TODO: confirm if c.g. differs from .stab reference
+  dy: 0.0        # m
+  dz: 0.0        # m
+
+# --- Extra parasite drag (viscous + hull) omitted by the inviscid .stab -------
+# The VSPAero panel solution carries almost no drag at low alpha (body-x CFx is
+# near zero / slightly positive). Real viscous + flying-boat hull drag is added
+# here as a body-x drag coefficient so a shallow descent needs positive thrust
+# and trim is well-posed. TODO: calibrate against flight / tow-tank data.
+aero:
+  parasite_CD0: 0.040
+
+# --- Thrust model: T = throttle * (T_static - k_v * V), clamped >= 0 ---------
+# TODO: replace with measured thrust-stand data (hook: Dynamics::setThrustModel).
+thrust:
+  T_static: 6.0  # N     static thrust at throttle=1, V=0   TODO
+  k_v:      0.05 # N/(m/s) linear velocity falloff          TODO
+  zcp:      0.0  # m     thrust-line offset below c.g. (pitch coupling)
+
+# --- Environment (air density NOT taken from the .stab's imperial Rho_) -------
+environment:
+  rho:     1.225    # kg/m^3
+  a_sound: 340.3    # m/s   (gives Mach 0.059 at Vinf 20 m/s, matching the .stab)
+  g:       9.80665  # m/s^2
+
+# --- Surface deflection + rate limits (degrees in YAML) ----------------------
+limits:
+  de_min_deg: -25.0
+  de_max_deg:  25.0
+  da_min_deg: -25.0
+  da_max_deg:  25.0
+  dr_min_deg: -25.0
+  dr_max_deg:  25.0
+  rate_deg_s:  150.0
+  dT_min: 0.0
+  dT_max: 1.0
+
+# --- Control mixing: virtual [delta_e, delta_a, delta_r] -> control groups ----
+# Leave 'matrix' commented to use the name-based default. The group order must
+# match the .stab control-group order: [Ailerons, Elevator, Rudder].
+#
+# Default (name-based) is equivalent to:
+# mixing:
+#   group_order: [Ailerons, Elevator, Rudder]
+#   matrix:            # columns: [delta_e, delta_a, delta_r]
+#     - [0.0, 1.0, 0.0]   # Ailerons <- delta_a
+#     - [1.0, 0.0, 0.0]   # Elevator <- delta_e
+#     - [0.0, 0.0, 1.0]   # Rudder   <- delta_r
+#
+# If a future .stab exposes raw ruddervator halves instead, use e.g.:
+#   matrix:
+#     - [0.0, 1.0,  0.0]   # aileron group
+#     - [1.0, 0.0,  1.0]   # ruddervator_L <- de + dr
+#     - [1.0, 0.0, -1.0]   # ruddervator_R <- de - dr
