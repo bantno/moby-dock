@@ -3,3 +3,6 @@ build/
 
 # Logs
 *.log
+
+# Data logs
+autoland_log.csv
