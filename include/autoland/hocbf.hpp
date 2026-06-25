@@ -40,6 +40,21 @@ struct AirspeedBarrier {  // b_V = V - V_min
   }
 };
 
+// TODO: upper airspeed barrier b = V_max - V >= 0 (over-speed / high-energy
+// water-impact / structural-limit protection). Same relative degree (3) and
+// control-affine structure as the lower airspeed barrier -- signs flip -- so it
+// reuses the existing machinery: barrierLie<3>(aero, AirspeedUpperBarrier{Vmax},
+// X) -> hocbfRow(...). NOT yet wired into LonCBFFilter: to enable, add Vmax +
+// an airspeed_upper flag to LonCBFConfig and push the row in filter() (mirrors
+// the thrustMin/thrustMax pair).
+struct AirspeedUpperBarrier {  // b = V_max - V
+  double Vmax{0};
+  template <class T>
+  T operator()(const std::array<T, NXA>& X) const {
+    return Vmax - X[LV];
+  }
+};
+
 // --- Lie-derivative bundle for a relative-degree-R barrier --------------------
 template <int R>
 struct BarrierLie {

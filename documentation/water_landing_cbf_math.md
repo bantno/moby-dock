@@ -71,6 +71,13 @@ $$
 b_V(X) = V - V_\text{min} \ge 0
 $$
 
+> **TODO (upper bound):** add a symmetric over-speed barrier
+> $b_{V,\max}(X) = V_\text{max} - V \ge 0$ to bound high-energy water impact /
+> structural limits. It has the same relative degree (3) and control-affine
+> structure as $b_V$ (the authority signs flip), so it reuses the same QP
+> machinery. Stubbed as `AirspeedUpperBarrier` in `hocbf.hpp`; not yet wired
+> into the filter.
+
 **Derivation & Authority:**
 * $\dot{b}_V = \dot{V}$, exposing $T$.
 * $\ddot{b}_V$ exposes $\dot{T}$ and $q$.
