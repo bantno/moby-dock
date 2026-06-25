@@ -6,3 +6,8 @@ build/
 
 # Data logs
 autoland_log.csv
+lon_autoland_log*.csv
+
+# Generated plots
+lon_trajectory*.png
+lon_compare*.png
