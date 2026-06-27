@@ -39,9 +39,32 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Merge `origin/main`; reconcile deck cleanup with collaborator
+
+**Branch/commit:** corbin-dev (`106159e` merge; `73098b9` consolidation)
+**What changed:** Fetched and merged `origin/main` into `corbin-dev`. Discovered the collaborator
+(bantno) had independently pushed `eaa3076 "remove deprecated files"` (already merged to `main` via
+PRs #1–#2) that deleted the same two decks (`AHAB_sweep.stab`, `AHAB 2.stab`) **plus four stale
+figure PNGs** (`autoland_response`, `cbf_detail`, `cbf_on_vs_off`, `gain_compare`) — but **did not
+repoint the code**, leaving `main`'s `autoland_sim.cpp`/`test_cbf.cpp` referencing the deleted
+`AHAB_sweep.stab` (broken build/tests on `main`). The merge was clean: the two `.stab` deletions
+resolved as both-deleted (no conflict), the 4 PNG deletions came in from `main`, and my repoint
+commit (`73098b9`) supplies the fix `main` was missing. Net: `corbin-dev` now removes the
+deprecated decks **and** builds/tests green.
+**Why:** Keep the branch current with `main` and fold the two parallel deck-cleanup efforts into one
+consistent state.
+**Verified:** clean merge, no conflicts; rebuilt + **29/29 tests pass** (Release) on the merged tree.
+Only `AHAB_combined.stab` + `example.stab` remain in `data/`; `figures/` is now just `README.md`.
+**Follow-ups / notes for collaborator:** `figures/README.md` still documents the 3 deleted PNGs
+(its "Regenerate" recipe — repointed to `AHAB_combined` — is still valid). Regenerate them on the
+new deck or trim the README to the recipe (open question). Pushing `corbin-dev` up fixes the broken
+deck references currently on `main`.
+**Files touched (merge):** removed `figures/*.png` (from `main`); no source changes in the merge
+commit itself.
+
 ## 2026-06-27 — Jack — Consolidate on the `AHAB_combined.stab` aero deck
 
-**Branch/commit:** corbin-dev
+**Branch/commit:** corbin-dev (`73098b9`)
 **What changed:** Removed the two deprecated aero decks `data/AHAB_sweep.stab` (α −20…0, β 0…20)
 and `data/AHAB 2.stab` (5-case fragment), and repointed everything that referenced them onto the
 real full deck `data/AHAB_combined.stab` (α −20…20 × β 0…20, single Mach 0.059):
@@ -57,9 +80,9 @@ could legitimately flip). Left as a TODO, not done here.
 **Why:** `AHAB_combined.stab` is the authoritative vehicle deck; the others were outdated/incorrect.
 **Verified:** all **29 tests** pass (Release); body-axis `autoland_sim` runs to touchdown on the
 combined deck (exit 0). No code besides the deck path changed.
-**Follow-ups / notes for collaborator:** fetched `main` still carries the deprecated decks — prune
-there too if not already done. `TODO.md` "Remove example.stab" item revised to reflect the
-keep-decision.
+**Follow-ups / notes for collaborator:** `main` had *already* removed these decks (collaborator's
+`eaa3076`) but without repointing the code — see the merge entry above. `TODO.md` "Remove
+example.stab" item revised to reflect the keep-decision.
 **Files touched:** `apps/autoland_sim.cpp`, `test/test_cbf.cpp`, `figures/README.md`,
 `data/` (removed `AHAB_sweep.stab`, `AHAB 2.stab`), `TODO.md`, `documentation/CHANGELOG.md`.
 
