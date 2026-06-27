@@ -64,7 +64,8 @@ safety-critical shaping. Code: `include/autoland/lon_nominal.hpp`.
 | Barrier | Definition | Rel. degree | Enforcement |
 |---|---|---|---|
 | Descent-rate `b` | `V·sinγ + √(v_safe² + 2·a_brk·h)` | 3 (δe & T̈) | **Hard** |
-| Airspeed `b_V` | `V − V_min` | 3 (δe & T̈) | Soft (slack) |
+| Airspeed (stall) `b_V` | `V − V_min` | 3 (δe & T̈) | Soft (slack) |
+| Airspeed (over-speed) `b_V,max` | `V_max − V` | 3 (δe & T̈) | Soft (slack) |
 | Min thrust | `T ≥ 0` | 2 (T̈) | Hard (closed form) |
 | Max thrust | `T_max − T ≥ 0` | 2 (T̈) | Hard (closed form) |
 | Contact-force `b_comp` | `V·sinγ + √(v_safe²(θ) + 2·a_brk·h)` | 2 (δe), 3 (T̈) | **Deferred — not implemented** |
@@ -143,7 +144,8 @@ As of `2b610a3`, the model uses **real AHAB vehicle data**, not placeholders:
   for `lon_autoland_sim` (the old `example.stab` placeholder is kept only for the unit tests;
   removing it is a backlog item).
 - `data/lon_scenario.yaml`: powered approach `T_set = 2.0 N`, `V_app = 18`, `γ = −3°`,
-  `v_safe = 0.1`, `CL_max = 1.2` (placeholder, drives `a_brk(V,γ)`), `Vmin = 13.5`, `Tmax = 50`,
+  `v_safe = 0.1`, `CL_max = 1.2` (placeholder, drives `a_brk(V,γ)`), `Vmin = 13.5`,
+  `V_max = 27` (placeholder over-speed ceiling, ~1.5·V_app; non-binding on this approach), `Tmax = 50`,
   descent class-K `[2,2,2]`; gains retuned for the real mass. (`a_brk = 3.0` remains in the file
   but is **deprecated/unused** — kept for logging/plot-script compatibility.)
 
@@ -170,7 +172,11 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
    only feeds a controller with feedback, so the small model mismatch there is harmless.)
 5. **No airspeed control in the nominal** (constant-thrust directive) — airspeed leans on the
    airspeed CBF; a high `Vmin` parks the energy-limited glider in a safe hover instead of landing.
-6. **Soft airspeed barrier** (slack-penalized) — not a hard guarantee. Descent + thrust are hard.
+6. **Soft airspeed barriers** (slack-penalized) — not a hard guarantee. Both the stall
+   (`V ≥ V_min`) and over-speed (`V ≤ V_max`) barriers are soft; descent + thrust are hard. The
+   over-speed barrier reuses the stall barrier's degree-3 machinery with flipped authority signs;
+   `V_max` is a placeholder set generously (non-binding on the nominal approach) — protective
+   only until calibrated to a real never-exceed / structural speed.
 7. **Discrete-time / ZOH** at dt = 0.01 approximates the continuous-time CBF guarantee.
 8. **No controllability guard** on `L_g L_f²b` (elevator authority → 0 at very low dynamic
    pressure would make the descent barrier unenforceable by elevator; not yet observed).

@@ -21,8 +21,11 @@ Optional per item: `(owner)` and a one-line note.
       slamming theory (mixed degree: 2 for elevator, 3 for thrust). Highest research value.
 - [ ] **Independent control-row oracle.** The finite-difference oracle covers the drift stack
       `L_f^k b`; add an independent check of the control row `L_g L_f^{r-1} b`.
-- [ ] **Upper airspeed barrier** `b = V_max − V` (over-speed / high-energy impact). Stubbed as
-      `AirspeedUpperBarrier` in `hocbf.hpp`; not wired into the filter.
+- [x] **Upper airspeed barrier** `b = V_max − V` (over-speed / high-energy impact). Wired into
+      the filter (`airspeed_upper` flag + `Vmax_air`), degree 3, soft by default; reuses the
+      lower barrier's machinery with flipped authority signs. `V_max` is a placeholder (see
+      Modeling/data). Like the lower barrier it is currently **soft** (see "Harden the airspeed
+      barrier" below — applies to both).
 - [ ] **Harden the airspeed barrier** — currently soft (slack-penalized), not a hard guarantee.
 - [ ] **Controllability guard** on `L_g L_f²b` (elevator authority → 0 at very low dynamic
       pressure would make the descent barrier unenforceable by elevator).
@@ -37,6 +40,9 @@ Optional per item: `(owner)` and a one-line note.
       approach trim — harmless, since the controller has feedback).
 - [ ] **Compute `C_L,max`** for the airframe. `a_brk(V,gamma)` uses a placeholder `CL_max = 1.2`
       (config). Needs a real value (CFD/wind-tunnel/flight); also the max-lift drag it implies.
+- [ ] **Calibrate `V_max`** (over-speed barrier ceiling). Currently a placeholder `27` m/s
+      (~1.5·V_app) in `lon_scenario.yaml`. Set to the real never-exceed / structural / hull-slam
+      speed limit.
 - [ ] **Remove the old `example.stab` placeholder aero deck.** Migrate the unit tests
       (`test/*` use `example.stab` via `Setup`) and the body-axis `autoland_sim` default onto
       `AHAB_combined.stab` first, then delete `example.stab`.

@@ -39,6 +39,33 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Add maximum-airspeed (over-speed) HOCBF barrier
+
+**Branch/commit:** corbin-dev
+**What changed:** Wired the previously-stubbed `AirspeedUpperBarrier` (`b = V_max − V`) into the
+CBF-QP filter — a symmetric over-speed / high-energy-impact guard alongside the stall barrier.
+New config: `airspeed_upper` / `airspeed_upper_hard` flags, `Vmax_air`, `c_airspeed_upper`
+(`LonCBFConfig` + `lon_scenario.yaml` + loader). The sim now logs `b_airspeed_upper`, its ψ-minima
+(console), and a `res_airup` residual column. Because the barrier is a function of `V` only, it
+reuses the lower barrier's degree-3 machinery unchanged: its drift Lie stack and control row are
+the **sign-flip** of the stall barrier's (`L_f^k b_up = −L_f^k b_lo` for `k≥1`).
+**Why:** Bound high-energy water impact / structural limits — slam loads grow with impact speed
+on a flying-boat hull. Closes the `TODO.md` "Upper airspeed barrier" item.
+**Design choices:** `V_max` is a placeholder (`27` m/s ≈ 1.5·V_app) set generously so it is
+protective but **non-binding** on the current approach; soft by default (mirrors the stall
+barrier); enabled by default (additive safety, zero trajectory change).
+**Verified:** all **29 tests** pass — incl. 2 new (oracle SECTION revalidating the upper
+barrier's drift stack; a sign-flip identity test vs the lower barrier; a hard-enforcement test
+under an over-speed nominal). Default sim run **unchanged** (touchdown 0.0137 m/s, 0 recoveries);
+`b_airspeed_upper` stays in [8.67, 10.48] (V_max=27), upper ψ-minima ≈ 17/33 — confirmed
+non-binding. Spot-check: lowering `V_max` / setting it hard makes the row actively cap `V`.
+**Follow-ups / notes for collaborator:** `V_max` needs calibration (new `TODO.md` item, under
+Modeling/data); both airspeed barriers remain soft (the "harden the airspeed barrier" item now
+applies to the pair). CSV gained a column — name-keyed plot scripts are unaffected.
+**Files touched:** `include/autoland/{hocbf,lon_cbf_filter}.hpp`, `src/{lon_cbf_filter,lon_sim}.cpp`,
+`data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`documentation/{water_landing_cbf_math,water_landing_cbf_design,CHANGELOG}.md`, `TODO.md`.
+
 ## 2026-06-27 — Jack — Steady level-flight trim for the initial condition
 
 **Branch/commit:** corbin-dev

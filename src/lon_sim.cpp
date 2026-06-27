@@ -139,16 +139,20 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.enabled = getOrB(yc, "enabled", true);
   cb.descent = getOrB(yc, "descent", true);
   cb.airspeed = getOrB(yc, "airspeed", true);
+  cb.airspeed_upper = getOrB(yc, "airspeed_upper", true);
   cb.thrust_limits = getOrB(yc, "thrust_limits", true);
   cb.descent_hard = getOrB(yc, "descent_hard", true);
   cb.airspeed_hard = getOrB(yc, "airspeed_hard", false);
+  cb.airspeed_upper_hard = getOrB(yc, "airspeed_upper_hard", false);
   cb.v_safe = getOr(yc, "v_safe", 0.6);
   cb.a_brk = getOr(yc, "a_brk", 3.0);
   cb.CLmax = getOr(yc, "CL_max", 1.2);
   cb.Vmin = getOr(yc, "Vmin", 0.85 * V_app);
+  cb.Vmax_air = getOr(yc, "V_max", 1.5 * V_app);
   cb.Tmax = getOr(yc, "Tmax", ac_.thrust.T_static);
   cb.c_descent = getArr3(yc, "c_descent", {2.0, 2.0, 2.0});
   cb.c_airspeed = getArr3(yc, "c_airspeed", {2.0, 2.0, 2.0});
+  cb.c_airspeed_upper = getArr3(yc, "c_airspeed_upper", {2.0, 2.0, 2.0});
   cb.c_thrust_min = getArr2(yc, "c_thrust_min", {4.0, 4.0});
   cb.c_thrust_max = getArr2(yc, "c_thrust_max", {4.0, 4.0});
   cb.w_de = getOr(yc, "w_de", 1.0);
@@ -189,13 +193,14 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   LonNominal nominal(sc_.nominal);
   LonCBFFilter filter(sc_.cbf);
   AirspeedBarrier bair{sc_.cbf.Vmin};
+  AirspeedUpperBarrier baup{sc_.cbf.Vmax_air};
   // bdesc is rebuilt each step: a_brk(V,gamma) depends on the (frozen) aero + V.
 
   std::ofstream csv(csv_path);
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
-         "de_nom,Tddot_nom,b_descent,b_airspeed,theta_cmd_deg,recovered,"
-         "psi1_desc,psi2_desc,psi1_air,psi2_air,"
-         "res_desc,res_air,res_tmin,res_tmax\n";
+         "de_nom,Tddot_nom,b_descent,b_airspeed,b_airspeed_upper,theta_cmd_deg,recovered,"
+         "psi1_desc,psi2_desc,psi1_air,psi2_air,psi1_airup,psi2_airup,"
+         "res_desc,res_air,res_airup,res_tmin,res_tmax\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -204,6 +209,7 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   // Track the minima of the HOCBF nested functions psi_i (the real
   // forward-invariance condition is psi_i >= 0 for all i, not just b = psi_0).
   double min_psi1d = 1e30, min_psi2d = 1e30, min_psi1a = 1e30, min_psi2a = 1e30;
+  double min_psi1au = 1e30, min_psi2au = 1e30;
 
   for (int k = 0; k <= nsteps; ++k) {
     const LonCtrlVec U_nom = nominal.step(X, dt);
@@ -222,37 +228,47 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         makeDescentBarrier(aero, sc_.cbf.v_safe, sc_.cbf.CLmax, X[LV]);
     const auto ldd = barrierLie<3>(aero, bdesc, X);
     const auto lda = barrierLie<3>(aero, bair, X);
+    const auto lau = barrierLie<3>(aero, baup, X);
     const auto& cd = sc_.cbf.c_descent;
     const auto& ca = sc_.cbf.c_airspeed;
+    const auto& cau = sc_.cbf.c_airspeed_upper;
     const double psi1d = ldd.Lf[1] + cd[0] * ldd.Lf[0];
     const double psi2d = ldd.Lf[2] + (cd[0] + cd[1]) * ldd.Lf[1] + cd[0] * cd[1] * ldd.Lf[0];
     const double psi1a = lda.Lf[1] + ca[0] * lda.Lf[0];
     const double psi2a = lda.Lf[2] + (ca[0] + ca[1]) * lda.Lf[1] + ca[0] * ca[1] * lda.Lf[0];
+    const double psi1au = lau.Lf[1] + cau[0] * lau.Lf[0];
+    const double psi2au = lau.Lf[2] + (cau[0] + cau[1]) * lau.Lf[1] + cau[0] * cau[1] * lau.Lf[0];
     min_psi1d = std::min(min_psi1d, psi1d);
     min_psi2d = std::min(min_psi2d, psi2d);
     min_psi1a = std::min(min_psi1a, psi1a);
     min_psi2a = std::min(min_psi2a, psi2a);
+    min_psi1au = std::min(min_psi1au, psi1au);
+    min_psi2au = std::min(min_psi2au, psi2au);
 
     // Active-set diagnostics: constraint residual rhs - a.U for each barrier row
     // (residual ~ 0 => that barrier is binding/active and shaping the control).
     std::vector<double> Lfd(ldd.Lf.begin(), ldd.Lf.end());
     std::vector<double> Lfa(lda.Lf.begin(), lda.Lf.end());
+    std::vector<double> Lfau(lau.Lf.begin(), lau.Lf.end());
     const HocbfRow rd = hocbfRow(Lfd, ldd.LgLf, {cd[0], cd[1], cd[2]});
     const HocbfRow ra = hocbfRow(Lfa, lda.LgLf, {ca[0], ca[1], ca[2]});
+    const HocbfRow rau = hocbfRow(Lfau, lau.LgLf, {cau[0], cau[1], cau[2]});
     const HocbfRow rtl = thrustMinRow(X, sc_.cbf.c_thrust_min[0], sc_.cbf.c_thrust_min[1]);
     const HocbfRow rtu = thrustMaxRow(X, sc_.cbf.Tmax, sc_.cbf.c_thrust_max[0], sc_.cbf.c_thrust_max[1]);
     auto resid = [&](const HocbfRow& r) {
       return r.rhs - (r.a(0, LDE) * U[LDE] + r.a(0, LTDDOT) * U[LTDDOT]);
     };
-    const double res_d = resid(rd), res_a = resid(ra), res_tl = resid(rtl), res_tu = resid(rtu);
+    const double res_d = resid(rd), res_a = resid(ra), res_au = resid(rau);
+    const double res_tl = resid(rtl), res_tu = resid(rtu);
 
     csv << t << ',' << X[LH] << ',' << X[LV] << ',' << X[LGAM] / kDeg << ','
         << X[LTH] / kDeg << ',' << X[LQ] << ',' << X[LT] << ',' << X[LTDOT] << ','
         << alpha / kDeg << ',' << sink << ',' << U[LDE] << ',' << U[LTDDOT] << ','
         << U_nom[LDE] << ',' << U_nom[LTDDOT] << ',' << bdesc(xa) << ','
-        << bair(xa) << ',' << nominal.thetaCmd() / kDeg << ','
+        << bair(xa) << ',' << baup(xa) << ',' << nominal.thetaCmd() / kDeg << ','
         << (filter.lastRecovery() ? 1 : 0) << ',' << psi1d << ',' << psi2d << ','
-        << psi1a << ',' << psi2a << ',' << res_d << ',' << res_a << ',' << res_tl
+        << psi1a << ',' << psi2a << ',' << psi1au << ',' << psi2au << ','
+        << res_d << ',' << res_a << ',' << res_au << ',' << res_tl
         << ',' << res_tu << '\n';
 
     if (X[LH] <= 0.0 && k > 0) {
@@ -280,6 +296,7 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   std::cout << "  HOCBF nested-function minima (must be >= 0 for the guarantee):\n";
   std::cout << "    descent : min psi1=" << min_psi1d << "  min psi2=" << min_psi2d << "\n";
   std::cout << "    airspeed: min psi1=" << min_psi1a << "  min psi2=" << min_psi2a << "\n";
+  std::cout << "    air-upr : min psi1=" << min_psi1au << "  min psi2=" << min_psi2au << "\n";
   std::cout << "  trace -> " << csv_path << "\n";
   return td;
 }

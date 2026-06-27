@@ -24,9 +24,11 @@ struct LonCBFConfig {
   bool enabled{true};
   bool descent{true};
   bool airspeed{true};
+  bool airspeed_upper{true};
   bool thrust_limits{true};
   bool descent_hard{true};
   bool airspeed_hard{false};
+  bool airspeed_upper_hard{false};
 
   double v_safe{0.6};     // hull-safe touchdown sink rate [m/s]
   double a_brk{3.0};      // [DEPRECATED] constant braking accel. The descent
@@ -35,10 +37,14 @@ struct LonCBFConfig {
   double CLmax{1.2};      // max lift coeff (stall ceiling) for a_brk(V,gamma).
                           // PLACEHOLDER -- calibrate to the real airframe.
   double Vmin{15.0};      // stall-margin airspeed [m/s]
+  double Vmax_air{30.0};  // never-exceed airspeed [m/s] for the upper airspeed
+                          // barrier (over-speed / high-energy impact). NOTE: this
+                          // is airspeed -- distinct from Tmax (thrust). PLACEHOLDER.
   double Tmax{12.0};      // max thrust [N]
 
   std::array<double, 3> c_descent{2.0, 2.0, 2.0};   // class-K gains (deg 3)
   std::array<double, 3> c_airspeed{2.0, 2.0, 2.0};
+  std::array<double, 3> c_airspeed_upper{2.0, 2.0, 2.0};
   std::array<double, 2> c_thrust_min{4.0, 4.0};     // {c11, c12} (deg 2)
   std::array<double, 2> c_thrust_max{4.0, 4.0};     // {c21, c22}
 

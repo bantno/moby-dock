@@ -75,6 +75,13 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     const std::vector<double> c(cfg_.c_airspeed.begin(), cfg_.c_airspeed.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_hard);
   }
+  if (cfg_.airspeed_upper) {
+    AirspeedUpperBarrier b{cfg_.Vmax_air};
+    auto lie = barrierLie<3>(aero, b, X);
+    std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+    const std::vector<double> c(cfg_.c_airspeed_upper.begin(), cfg_.c_airspeed_upper.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard);
+  }
   if (cfg_.thrust_limits) {
     pushHocbf(thrustMinRow(X, cfg_.c_thrust_min[0], cfg_.c_thrust_min[1]), true);
     pushHocbf(thrustMaxRow(X, cfg_.Tmax, cfg_.c_thrust_max[0], cfg_.c_thrust_max[1]), true);

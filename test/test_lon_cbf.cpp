@@ -304,4 +304,75 @@ TEST_CASE("drift Lie stack matches a finite-difference flow oracle", "[lon_cbf]"
     const auto lie = barrierLie<3>(a, b, X);
     checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
   }
+
+  SECTION("upper airspeed barrier") {
+    AirspeedUpperBarrier b{1.5 * V};
+    const auto lie = barrierLie<3>(a, b, X);
+    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  }
+}
+
+// The upper airspeed barrier b = Vmax - V is the sign-flip of the lower
+// b_V = V - Vmin: same state dependence (V only), opposite sign. So for k >= 1
+// the drift Lie terms and the control row negate the lower barrier's, while the
+// k=0 value is Vmax - V (not V - Vmin). This is what lets it reuse the same
+// degree-3 machinery (the HOCBF builder handles the sign through L_g L_f^2 b).
+TEST_CASE("upper airspeed barrier is the sign-flip of the lower", "[lon_cbf]") {
+  Setup s;
+  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
+  const double alpha = theta - gamma;
+  const double Vmin = 0.85 * V, Vmax = 1.5 * V;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
+
+  LonStateVec X;
+  X << 30.0, V, gamma, theta, 0.3, 5.0, 1.0;  // nonzero q, T, Tdot
+  AirspeedBarrier blo{Vmin};
+  AirspeedUpperBarrier bup{Vmax};
+  auto lielo = barrierLie<3>(a, blo, X);
+  auto lieup = barrierLie<3>(a, bup, X);
+
+  // k=0 values are the literal barrier definitions.
+  CHECK(bup(toArray(X)) == Approx(Vmax - V).epsilon(1e-12));
+  const LonStateVec xd = lonXdot(a, X, LonCtrlVec::Zero());
+  CHECK(lieup.Lf[1] == Approx(-xd[LV]).epsilon(1e-9));  // L_f b_up == -Vdot
+
+  // k>=1 drift terms and the control row negate the lower barrier's.
+  for (int k = 1; k <= 3; ++k)
+    CHECK(lieup.Lf[k] == Approx(-lielo.Lf[k]).epsilon(1e-9).margin(1e-12));
+  CHECK(lieup.LgLf(0, LDE) == Approx(-lielo.LgLf(0, LDE)).epsilon(1e-9).margin(1e-12));
+  CHECK(lieup.LgLf(0, LTDDOT) == Approx(-lielo.LgLf(0, LTDDOT)).epsilon(1e-9).margin(1e-12));
+}
+
+// The safety guarantee for the upper barrier: with it hard and a low Vmax, an
+// over-speed nominal (nose-down + max thrust to accelerate) must be corrected so
+// the assembled upper airspeed HOCBF row a . U <= rhs holds.
+TEST_CASE("lon filter enforces the upper airspeed barrier when hard", "[lon_cbf]") {
+  Setup s;
+  LonCBFConfig cfg;
+  cfg.descent = false;          // isolate the upper airspeed barrier
+  cfg.airspeed = false;
+  cfg.thrust_limits = false;
+  cfg.airspeed_upper = true;
+  cfg.airspeed_upper_hard = true;
+  cfg.Vmax_air = 18.5;          // just above the state's V -> barrier is active
+  LonCBFFilter filter(cfg);
+
+  LonStateVec X;
+  X << 30.0, 18.0, -3.0 * kDeg, -1.0 * kDeg, 0.0, 5.0, 0.0;  // near Vmax
+  LonCtrlVec Un;
+  Un << -0.3, 500.0;            // unsafe: nose-down + slam thrust (accelerate)
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);  // the over-speed command was corrected
+
+  const AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, X[LV], X[LTH] - X[LGAM]);
+  AirspeedUpperBarrier b{cfg.Vmax_air};
+  auto lie = barrierLie<3>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf,
+                          {cfg.c_airspeed_upper[0], cfg.c_airspeed_upper[1],
+                           cfg.c_airspeed_upper[2]});
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
 }

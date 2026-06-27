@@ -38,12 +38,14 @@ nominal:
 
 # --- CBF safety filter --------------------------------------------------------
 cbf:
-  enabled:       true
-  descent:       true
-  airspeed:      true
-  thrust_limits: true
-  descent_hard:  true
-  airspeed_hard: false
+  enabled:        true
+  descent:        true
+  airspeed:       true
+  airspeed_upper: true
+  thrust_limits:  true
+  descent_hard:   true
+  airspeed_hard:  false
+  airspeed_upper_hard: false
 
   v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
   a_brk:  3.0         # [DEPRECATED] constant braking accel; a_brk is now
@@ -57,12 +59,19 @@ cbf:
   # just above the water. 13.5 (~0.75 V_app) gives enough margin to complete the
   # touchdown; raise it to see the safe-hover behavior instead.
   Vmin:   13.5
+  # Never-exceed airspeed [m/s] for the upper (over-speed / high-energy water-
+  # impact) barrier. PLACEHOLDER -- calibrate to a real never-exceed / structural
+  # speed. 27 (~1.5 V_app) is generous: protective but non-binding on this
+  # nominal approach (which flies ~18 m/s and only slows), so the trajectory is
+  # unchanged; lower it to see the upper airspeed barrier actively cap V.
+  V_max:  27.0
   Tmax:   50.0         # max thrust [N] (T_static)
 
   # Class-K gains (linear alpha_i(s) = c_i s). Descent/airspeed are degree 3.
   c_descent:    [2.0, 2.0, 2.0]   # cd2-style envelope; deepest flare this airframe
                                   # achieves at a_brk=3 (touchdown sink ~0.32 m/s)
-  c_airspeed:   [2.0, 2.0, 2.0]
+  c_airspeed:       [2.0, 2.0, 2.0]
+  c_airspeed_upper: [2.0, 2.0, 2.0]
   c_thrust_min: [6.0, 6.0]
   c_thrust_max: [6.0, 6.0]
 

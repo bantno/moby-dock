@@ -87,12 +87,19 @@ $$
 b_V(X) = V - V_\text{min} \ge 0
 $$
 
-> **TODO (upper bound):** add a symmetric over-speed barrier
-> $b_{V,\max}(X) = V_\text{max} - V \ge 0$ to bound high-energy water impact /
-> structural limits. It has the same relative degree (3) and control-affine
-> structure as $b_V$ (the authority signs flip), so it reuses the same QP
-> machinery. Stubbed as `AirspeedUpperBarrier` in `hocbf.hpp`; not yet wired
-> into the filter.
+**Upper (over-speed) barrier.** A symmetric maximum-airspeed barrier
+$$
+b_{V,\max}(X) = V_\text{max} - V \ge 0
+$$
+bounds high-energy water impact / structural limits. It has the same relative
+degree (3) and control-affine structure as $b_V$, with the authority signs
+flipped: since $b_{V,\max}$ depends on $V$ only, $L_f^k b_{V,\max} = -L_f^k b_V$
+for $k \ge 1$ and $L_g L_f^2 b_{V,\max} = -L_g L_f^2 b_V$ (only the $k=0$ value
+differs, $V_\text{max}-V$ vs $V-V_\text{min}$). It therefore reuses the same
+degree-3 QP machinery unchanged. Implemented as `AirspeedUpperBarrier` in
+`hocbf.hpp` and wired into the filter via the `airspeed_upper` flag + `Vmax_air`
+in `LonCBFConfig` (soft by default, mirroring the lower barrier). `V_max` is a
+placeholder pending a real never-exceed / structural speed.
 
 **Derivation & Authority:**
 * $\dot{b}_V = \dot{V}$, exposing $T$.
