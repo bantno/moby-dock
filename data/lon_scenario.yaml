@@ -15,7 +15,7 @@ V_app: 18.0           # approach airspeed [m/s]
 gamma_app_deg: -3.0   # nominal flight-path angle [deg] (negative = descent)
 
 dt:    0.01
-t_max: 60.0
+t_max: 200.0
 cbf_enabled: true
 
 initial:
@@ -26,14 +26,15 @@ initial:
 
 # --- Nominal controller -------------------------------------------------------
 nominal:
-  # T_set: 6.0        # [N] (default = trim thrust); uncomment to override
+  T_set: 2.0           # [N] powered approach: carry thrust so there's airspeed
+                      # energy to flare (retuned for real mass 3.61 kg / T_static 50 N)
   Kp_T:  4.0          # thrust PD: Tddot = Kp_T (T_set - T) - Kd_T Tdot
   Kd_T:  4.0
   Kp_gamma: 2.0       # gamma -> theta_cmd (PI)
   Ki_gamma: 0.5
-  theta_cmd_max_deg: 17.0
-  Kp_theta: 6.0       # theta -> delta_e (PD)
-  Kq:       1.5
+  theta_cmd_max_deg: 25.0
+  Kp_theta: 1.0       # theta -> delta_e (PD); scaled ~/8 from 6.0 for the real
+  Kq:       0.25      # 
 
 # --- CBF safety filter --------------------------------------------------------
 cbf:
@@ -44,7 +45,7 @@ cbf:
   descent_hard:  true
   airspeed_hard: false
 
-  v_safe: 0.6         # hull-safe touchdown sink rate [m/s]
+  v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
   a_brk:  3.0         # braking deceleration for the descent envelope [m/s^2]
   # Stall-margin floor [m/s]. This clean (low-drag, low-thrust) glider is energy
   # limited near the surface: with a high floor the airspeed barrier correctly
@@ -52,10 +53,11 @@ cbf:
   # just above the water. 13.5 (~0.75 V_app) gives enough margin to complete the
   # touchdown; raise it to see the safe-hover behavior instead.
   Vmin:   13.5
-  Tmax:   6.0         # max thrust [N] (T_static)
+  Tmax:   50.0         # max thrust [N] (T_static)
 
   # Class-K gains (linear alpha_i(s) = c_i s). Descent/airspeed are degree 3.
-  c_descent:    [2.0, 2.0, 2.0]
+  c_descent:    [2.0, 2.0, 2.0]   # cd2-style envelope; deepest flare this airframe
+                                  # achieves at a_brk=3 (touchdown sink ~0.32 m/s)
   c_airspeed:   [2.0, 2.0, 2.0]
   c_thrust_min: [6.0, 6.0]
   c_thrust_max: [6.0, 6.0]

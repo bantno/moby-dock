@@ -16,18 +16,18 @@
 #     pending thrust-stand data.
 # =============================================================================
 
-# --- Mass properties --- TODO: PLACEHOLDER VALUES, REPLACE -------------------
+# --- Mass properties --- 
 inertia:
-  mass: 4.0      # kg            TODO
-  Ixx:  0.50     # kg m^2        TODO
-  Iyy:  0.40     # kg m^2        TODO
-  Izz:  0.80     # kg m^2        TODO
-  Ixz:  0.02     # kg m^2        TODO
+  mass: 3.6139     # kg    
+  Ixx:  0.1012     # kg m^2
+  Iyy:  0.0521     # kg m^2
+  Izz:  0.0773     # kg m^2
+  Ixz:  0.00       # kg m^2
 
 # --- c.g. offset from the .stab moment reference (body axes) ------------------
 # Zero => true c.g. coincides with the .stab Xcg/Ycg/Zcg reference point.
 cg_offset:
-  dx: 0.0        # m   TODO: confirm if c.g. differs from .stab reference
+  dx: 0.0        # m
   dy: 0.0        # m
   dz: 0.0        # m
 
@@ -37,14 +37,14 @@ cg_offset:
 # here as a body-x drag coefficient so a shallow descent needs positive thrust
 # and trim is well-posed. TODO: calibrate against flight / tow-tank data.
 aero:
-  parasite_CD0: 0.040
+  parasite_CD0: 0.030
 
 # --- Thrust model: T = throttle * (T_static - k_v * V), clamped >= 0 ---------
 # TODO: replace with measured thrust-stand data (hook: Dynamics::setThrustModel).
 thrust:
-  T_static: 6.0  # N     static thrust at throttle=1, V=0   TODO
+  T_static: 50.0  # N     static thrust at throttle=1, V=0   TODO
   k_v:      0.05 # N/(m/s) linear velocity falloff          TODO
-  zcp:      0.0  # m     thrust-line offset below c.g. (pitch coupling)
+  zcp:      .15  # m     thrust-line offset below c.g. (pitch coupling)
 
 # --- Environment (air density NOT taken from the .stab's imperial Rho_) -------
 environment:
