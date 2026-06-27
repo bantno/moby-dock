@@ -43,9 +43,16 @@ Optional per item: `(owner)` and a one-line note.
 - [ ] **Calibrate `V_max`** (over-speed barrier ceiling). Currently a placeholder `27` m/s
       (~1.5·V_app) in `lon_scenario.yaml`. Set to the real never-exceed / structural / hull-slam
       speed limit.
-- [ ] **Remove the old `example.stab` placeholder aero deck.** Migrate the unit tests
-      (`test/*` use `example.stab` via `Setup`) and the body-axis `autoland_sim` default onto
-      `AHAB_combined.stab` first, then delete `example.stab`.
+- [x] **Retire the deprecated aero decks.** Removed `AHAB_sweep.stab` and `AHAB 2.stab`; the
+      body-axis `autoland_sim` default and `test_cbf` now use `AHAB_combined.stab`. **Decision:
+      `example.stab` is kept** as the small synthetic fixture for the deck-agnostic unit tests
+      (`test_aero_table`/`test_linear_model`/`test_trim`/`test_lon_cbf`).
+- [ ] **(Optional) Migrate the unit tests off `example.stab` onto `AHAB_combined.stab`.** Lower
+      priority since the tests are deck-agnostic. Non-trivial: the combined deck's β grid is not
+      symmetric (β ∈ [0,20], not [−10,10]), so `test_aero_table`'s node-value / clamp / midpoint
+      assertions need new query points and re-derived ground-truth values; and `test_linear_model`'s
+      static sign-sense checks (e.g. `Cm_α < 0`) may flip on the real near-neutral airframe — a real
+      finding to surface, not silently patch.
 - [ ] **Calibrate `parasite_CD0` and thrust `k_v`** against flight / tow-tank / thrust-stand data.
 - [ ] **Confirm the mixing map** — OpenVSP control-group definitions vs the default
       (Elevator←δe, Ailerons←δa, Rudder←δr), or set `mixing.matrix`.

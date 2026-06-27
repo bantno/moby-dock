@@ -216,8 +216,8 @@ TEST_CASE("Disabled CBF is a hard pass-through", "[cbf]") {
 }
 
 TEST_CASE("CBF runs on the real linearized longitudinal model", "[cbf]") {
-  // Exercises the LinearModelCAM swap seam end-to-end against AHAB sweep aero.
-  AeroTable t = AeroTable::fromFile(kData + "/AHAB_sweep.stab");
+  // Exercises the LinearModelCAM swap seam end-to-end against the AHAB aero deck.
+  AeroTable t = AeroTable::fromFile(kData + "/AHAB_combined.stab");
   AircraftConfig cfg = loadAircraftConfig(kData + "/aircraft.yaml");
   Mixing mx = Mixing::build(cfg, t);
   Dynamics dyn(t, mx, cfg);

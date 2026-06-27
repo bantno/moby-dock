@@ -1,7 +1,7 @@
 # Figures
 
 Closed-loop autoland figures, generated from `autoland_sim` CSV logs
-(aero: `data/AHAB_sweep.stab`).
+(aero: `data/AHAB_combined.stab`).
 
 | File | What it shows |
 |------|---------------|
@@ -13,16 +13,16 @@ Closed-loop autoland figures, generated from `autoland_sim` CSV logs
 
 ```bash
 # nominal response
-./build/autoland_sim                      # writes autoland_log.csv (AHAB_sweep default)
+./build/autoland_sim                      # writes autoland_log.csv (AHAB_combined default)
 python3 scripts/plot_results.py autoland_log.csv --save figures/autoland_response.png
 
 # CBF on/off study at V_app=15.5 (edit V_app + cbf.enabled in two scenario copies)
-./build/autoland_sim data/AHAB_sweep.stab data/aircraft.yaml scenario_on.yaml  cbf_on.csv
-./build/autoland_sim data/AHAB_sweep.stab data/aircraft.yaml scenario_off.yaml cbf_off.csv
+./build/autoland_sim data/AHAB_combined.stab data/aircraft.yaml scenario_on.yaml  cbf_on.csv
+./build/autoland_sim data/AHAB_combined.stab data/aircraft.yaml scenario_off.yaml cbf_off.csv
 python3 scripts/cbf_compare.py cbf_on.csv cbf_off.csv --vmin 15 --save figures/cbf_on_vs_off.png
 
 # CBF internals (descent rate, pitch, nominal-vs-safe controls, barrier values)
-./build/autoland_sim data/AHAB_sweep.stab data/aircraft.yaml scenario_on.yaml cbf_detail.csv
+./build/autoland_sim data/AHAB_combined.stab data/aircraft.yaml scenario_on.yaml cbf_detail.csv
 python3 scripts/plot_cbf_detail.py cbf_detail.csv --vsafe 0.6 --save figures/cbf_detail.png
 ```
 

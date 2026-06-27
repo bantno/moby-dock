@@ -39,6 +39,30 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Consolidate on the `AHAB_combined.stab` aero deck
+
+**Branch/commit:** corbin-dev
+**What changed:** Removed the two deprecated aero decks `data/AHAB_sweep.stab` (α −20…0, β 0…20)
+and `data/AHAB 2.stab` (5-case fragment), and repointed everything that referenced them onto the
+real full deck `data/AHAB_combined.stab` (α −20…20 × β 0…20, single Mach 0.059):
+- `apps/autoland_sim.cpp` default deck `AHAB_sweep.stab` → `AHAB_combined.stab` (a superset in α,
+  so the body-axis app now runs on-grid at positive α where it used to extrapolate).
+- `test/test_cbf.cpp` "CBF runs on the real linearized longitudinal model" likewise.
+- `figures/README.md` regen commands + caption.
+**Kept `example.stab`** intentionally — the deck-agnostic unit tests (`test_aero_table`,
+`test_linear_model`, `test_trim`, `test_lon_cbf`) still use it as a small synthetic fixture
+(symmetric β ∈ [−10,10]); migrating them to the real deck is a separate, riskier change (β grid is
+no longer symmetric; real airframe is near-neutral/slightly unstable so some sign-sense assertions
+could legitimately flip). Left as a TODO, not done here.
+**Why:** `AHAB_combined.stab` is the authoritative vehicle deck; the others were outdated/incorrect.
+**Verified:** all **29 tests** pass (Release); body-axis `autoland_sim` runs to touchdown on the
+combined deck (exit 0). No code besides the deck path changed.
+**Follow-ups / notes for collaborator:** fetched `main` still carries the deprecated decks — prune
+there too if not already done. `TODO.md` "Remove example.stab" item revised to reflect the
+keep-decision.
+**Files touched:** `apps/autoland_sim.cpp`, `test/test_cbf.cpp`, `figures/README.md`,
+`data/` (removed `AHAB_sweep.stab`, `AHAB 2.stab`), `TODO.md`, `documentation/CHANGELOG.md`.
+
 ## 2026-06-27 — Jack — Add maximum-airspeed (over-speed) HOCBF barrier
 
 **Branch/commit:** corbin-dev
