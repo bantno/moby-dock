@@ -11,3 +11,7 @@ lon_autoland_log*.csv
 # Generated plots
 lon_trajectory*.png
 lon_compare*.png
+
+# Personal Claude session context (per-developer, not shared)
+CLAUDE.md
+PROJECT_CONTEXT.md

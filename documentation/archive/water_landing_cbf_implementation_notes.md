@@ -1,3 +1,8 @@
+> **ARCHIVED — historical reference.** This is a frozen point-in-time snapshot of the
+> 2026-06-25 implementation session. The living, maintained successor is
+> [`../water_landing_cbf_design.md`](../water_landing_cbf_design.md); for chronological
+> changes since, see [`../CHANGELOG.md`](../CHANGELOG.md). Kept for history; do not edit.
+
 # Augmented Longitudinal CBF-QP: Implementation Notes & Session Summary
 
 **Date:** 2026-06-25
