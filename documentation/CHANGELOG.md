@@ -8,6 +8,7 @@ This doc's job — and how it differs from the others:
 | Doc | Job |
 |---|---|
 | **`CHANGELOG.md`** (this file) | *When / who / what / why* — chronological, append-only. |
+| `../TODO.md` | *Backlog* — granular open tasks/ideas to pick up. |
 | `water_landing_cbf_design.md` | *Current state* — the living theory/approach/assumptions/decisions. |
 | `water_landing_cbf_math.md` | *The math* — formal derivations. |
 | `archive/` | Superseded historical docs. |
@@ -37,6 +38,17 @@ line to it so your Claude session reads this changelog at startup:
 > the last session before doing any work.
 
 ---
+
+## 2026-06-27 — Jack — Add `TODO.md` backlog; retire stale README TODO
+
+**Branch/commit:** corbin-dev
+**What changed:** Added a root-level `TODO.md` (granular backlog, grouped by area) seeded from
+the design doc's open items. Replaced the stale README "⚠️ TODO" section (placeholder-data
+items resolved by the AHAB refactor) with a pointer to it. Wired `TODO.md` into the
+collaboration convention (CLAUDE.md startup note + changelog doc-map).
+**Why:** Give a low-friction, collaborator-visible place to capture tasks/ideas, distinct from
+the changelog (done) and the design doc §9 (rationale for big threads).
+**Files touched:** `TODO.md`, `README.md`, `CLAUDE.md` (gitignored), `documentation/CHANGELOG.md`.
 
 ## 2026-06-27 — Jack — Verify drift Lie stack (`L_f³b`) + make build MSVC-portable
 

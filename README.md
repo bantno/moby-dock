@@ -58,19 +58,11 @@ nonlinear plant with no other change.
   m/s). The file's `Rho_=0.002377` is a stale imperial default and is ignored;
   air density comes from `aircraft.yaml` (default 1.225 kg/m³).
 
-## ⚠️ TODO — you must supply / confirm
+## TODO / backlog
 
-- **Mass properties** in `data/aircraft.yaml` (`mass, Ixx, Iyy, Izz, Ixz`) are
-  PLACEHOLDERS sized only to make the demo run. Replace with real values.
-- **Mixing map** — confirm the OpenVSP control-group definitions match the
-  default (Elevator←δe, Ailerons←δa, Rudder←δr), or set `mixing.matrix`.
-- **Thrust model** params are placeholders pending thrust-stand data
-  (`Dynamics::setThrustModel` is the hook for measured data).
-- **c.g. offset** vs the .stab moment reference (default 0).
-- **Controller gains / flare params** in `scenario.yaml` are demo tuning.
-- The **glide-path is shallow (−1.5°)** because the clean VSPAero aero has high
-  L/D; a steeper, realistic slope needs hull/flap drag in the aero model (see
-  the note in `scenario.yaml`).
+Open tasks, data to calibrate, and ideas live in **[`TODO.md`](TODO.md)** (root). The
+heavyweight design rationale is in `documentation/water_landing_cbf_design.md`; recent
+changes are in `documentation/CHANGELOG.md`.
 
 ## Next step: CBF QP
 
