@@ -1,3 +1,9 @@
+> **ARCHIVED — historical reference.** This is the original brainstorming-era research
+> pitch that started the project. The formalized math lives in
+> [`../water_landing_cbf_math.md`](../water_landing_cbf_math.md) and the current design
+> in [`../water_landing_cbf_design.md`](../water_landing_cbf_design.md). Kept for history;
+> do not edit.
+
 # Safety-Critical Autonomous Water Landing via Control Barrier Functions
 *Working title — research pitch*
 

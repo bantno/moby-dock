@@ -17,6 +17,7 @@
 // coefficients (CFx,CFy,CFz,Cl=CMx,Cm=CMy,Cn=CMz), never from wind-axis CL/CD.
 // Sign conventions are documented in linear_model.hpp.
 // =============================================================================
+
 namespace autoland {
 
 // Pluggable thrust model. Default implements T = throttle*(T_static - k_v*V),

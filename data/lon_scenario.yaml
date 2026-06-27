@@ -1,0 +1,85 @@
+# =============================================================================
+# Augmented-longitudinal CBF-QP water-landing scenario.
+#
+# State X = [h, V, gamma, theta, q, T, Tdot]; control U = [delta_e, Tddot].
+# Nominal = constant thrust setpoint (PD on the T state) + cascade elevator law
+# holding a constant negative flight-path angle gamma. The CBF-QP filter then
+# enforces descent-rate, airspeed, and thrust-limit barriers (doc 3.1/3.2/3.4;
+# the contact-force barrier 3.3 is deferred).
+#
+# Defaults for theta_trim / T_set / gamma_ref come from a trim solve at
+# (V_app, gamma_app_deg); fields below override them.
+# =============================================================================
+
+V_app: 18.0           # approach airspeed [m/s]
+gamma_app_deg: -3.0   # nominal flight-path angle [deg] (negative = descent)
+
+dt:    0.01
+t_max: 200.0
+cbf_enabled: true
+
+initial:
+  h0:          40.0   # start altitude AGL [m]
+  dV:           0.0   # V0 = V_app + dV
+  dgamma_deg:   0.0   # gamma0 = gamma_app + dgamma
+  dtheta_deg:   0.0   # theta0 = theta_trim + dtheta
+
+# --- Nominal controller -------------------------------------------------------
+nominal:
+  T_set: 2.0           # [N] powered approach: carry thrust so there's airspeed
+                      # energy to flare (retuned for real mass 3.61 kg / T_static 50 N)
+  Kp_T:  4.0          # thrust PD: Tddot = Kp_T (T_set - T) - Kd_T Tdot
+  Kd_T:  4.0
+  Kp_gamma: 2.0       # gamma -> theta_cmd (PI)
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 25.0
+  Kp_theta: 1.0       # theta -> delta_e (PD); scaled ~/8 from 6.0 for the real
+  Kq:       0.25      # 
+
+# --- CBF safety filter --------------------------------------------------------
+cbf:
+  enabled:        true
+  descent:        true
+  airspeed:       true
+  airspeed_upper: true
+  thrust_limits:  true
+  descent_hard:   true
+  airspeed_hard:  false
+  airspeed_upper_hard: false
+
+  v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
+  a_brk:  3.0         # [DEPRECATED] constant braking accel; a_brk is now
+                      # computed as a_brk(V,gamma) from CL_max below. Kept for
+                      # logging / plot-script compatibility.
+  CL_max: 1.2         # max lift coeff (stall ceiling) for a_brk(V,gamma).
+                      # PLACEHOLDER -- calibrate to the real airframe.
+  # Stall-margin floor [m/s]. This clean (low-drag, low-thrust) glider is energy
+  # limited near the surface: with a high floor the airspeed barrier correctly
+  # blocks the nose-down needed to descend and the aircraft parks in a safe hover
+  # just above the water. 13.5 (~0.75 V_app) gives enough margin to complete the
+  # touchdown; raise it to see the safe-hover behavior instead.
+  Vmin:   13.5
+  # Never-exceed airspeed [m/s] for the upper (over-speed / high-energy water-
+  # impact) barrier. PLACEHOLDER -- calibrate to a real never-exceed / structural
+  # speed. 27 (~1.5 V_app) is generous: protective but non-binding on this
+  # nominal approach (which flies ~18 m/s and only slows), so the trajectory is
+  # unchanged; lower it to see the upper airspeed barrier actively cap V.
+  V_max:  27.0
+  Tmax:   50.0         # max thrust [N] (T_static)
+
+  # Class-K gains (linear alpha_i(s) = c_i s). Descent/airspeed are degree 3.
+  c_descent:    [2.0, 2.0, 2.0]   # cd2-style envelope; deepest flare this airframe
+                                  # achieves at a_brk=3 (touchdown sink ~0.32 m/s)
+  c_airspeed:       [2.0, 2.0, 2.0]
+  c_airspeed_upper: [2.0, 2.0, 2.0]
+  c_thrust_min: [6.0, 6.0]
+  c_thrust_max: [6.0, 6.0]
+
+  w_de:    1.0
+  w_Tddot: 0.01       # cheap thrust-jerk so the QP prefers throttle over elevator
+  slack_penalty: 10000.0
+
+  de_min_deg: -28.6
+  de_max_deg:  28.6
+  Tddot_min: -500.0
+  Tddot_max:  500.0

@@ -55,6 +55,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
+# --- autodiff (exact higher-order forward-mode derivatives for the HOCBFs) ----
+# Header-only C++17, used by the augmented-longitudinal CBF to compute Lie
+# derivatives exactly (no finite differences). autodiff's own CMake does a
+# find_package(Eigen3), which we can't satisfy with our header-only Eigen, so we
+# only POPULATE the source and expose its include dir as an INTERFACE target
+# (same approach as Eigen above). Headers live under ${autodiff_SOURCE_DIR}.
+FetchContent_Declare(
+  autodiff
+  GIT_REPOSITORY https://github.com/autodiff/autodiff.git
+  GIT_TAG v1.1.2
+  GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(autodiff)
+if(NOT autodiff_POPULATED)
+  FetchContent_Populate(autodiff)
+endif()
+add_library(autodiff_headers INTERFACE)
+target_include_directories(autodiff_headers INTERFACE ${autodiff_SOURCE_DIR})
+target_link_libraries(autodiff_headers INTERFACE eigen_headers)
+
 # --- OSQP (quadratic-program solver backing the CBF safety filter) -----------
 # Linked privately into autoland_core; only qp_solver.cpp includes <osqp.h>, so
 # OSQP is an implementation detail and does not leak into the public headers.
@@ -84,11 +104,23 @@ add_library(autoland_core
   src/qp_solver.cpp
   src/cbf.cpp
   src/sim.cpp
+  src/lon_augmented.cpp
+  src/lon_cbf_filter.cpp
+  src/lon_sim.cpp
 )
 target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(autoland_core PUBLIC eigen_headers yaml-cpp::yaml-cpp)
+# autodiff is used in public headers (lie_taylor.hpp), so it must be PUBLIC.
+target_link_libraries(autoland_core PUBLIC eigen_headers yaml-cpp::yaml-cpp autodiff_headers)
 target_link_libraries(autoland_core PRIVATE osqpstatic)
-target_compile_options(autoland_core PRIVATE -Wall -Wextra)
+# Warning flags are GCC/Clang spelling; MSVC uses /W and doesn't define M_PI
+# from <cmath> unless _USE_MATH_DEFINES is set. Keep the project buildable on
+# both toolchains without weakening the GCC/Clang build.
+if(MSVC)
+  target_compile_options(autoland_core PRIVATE /W3)
+  target_compile_definitions(autoland_core PUBLIC _USE_MATH_DEFINES)
+else()
+  target_compile_options(autoland_core PRIVATE -Wall -Wextra)
+endif()
 
 # Path to the bundled data directory, so the app/tests can find configs by default.
 target_compile_definitions(autoland_core PUBLIC
@@ -99,6 +131,9 @@ target_compile_definitions(autoland_core PUBLIC
 # -----------------------------------------------------------------------------
 add_executable(autoland_sim apps/autoland_sim.cpp)
 target_link_libraries(autoland_sim PRIVATE autoland_core)
+
+add_executable(lon_autoland_sim apps/lon_autoland_sim.cpp)
+target_link_libraries(lon_autoland_sim PRIVATE autoland_core)
 
 # -----------------------------------------------------------------------------
 # Tests
@@ -112,6 +147,7 @@ add_executable(unit_tests
   test/test_trim.cpp
   test/test_linear_model.cpp
   test/test_cbf.cpp
+  test/test_lon_cbf.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)
