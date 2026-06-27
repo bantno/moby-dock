@@ -51,8 +51,24 @@ The safety filter enforces forward invariance on a set of barriers. The formulat
 ### 3.1 Descent-Rate Barrier ($b$)
 Ensures sufficient altitude to arrest the current sink rate before touchdown.
 $$
-b(X) = V\sin\gamma + \sqrt{v_\text{safe}^2 + 2 a_\text{brk} h} \ge 0
+b(X) = V\sin\gamma + \sqrt{v_\text{safe}^2 + 2\, a_\text{brk}(V,\gamma)\, h} \ge 0
 $$
+
+**Speed/path-angle-dependent braking acceleration.** The braking authority is the maximum
+upward acceleration available at the current airspeed by pulling to the (effective) max-lift
+condition — lift and drag minus gravity:
+$$
+a_\text{brk}(V,\gamma) = \frac{\rho_a V^2 S}{2m}\big[C_{L,\max}\cos\gamma - C_{D,\text{maxlift}}\sin\gamma\big] - g .
+$$
+**Thrust is deliberately omitted.** Putting the thrust state $T$ (or $\theta$) into $b$ would make
+$b$ depend on $T$/$\theta$ directly and drop the barrier's relative degree below 3, breaking the
+augmented HOCBF alignment (that $\theta$-coupling is exactly the §3.3 mixed-degree problem). Lift
+and drag depend only on $(V,\gamma)$, which are already in $b$, so **relative degree 3 is
+preserved** and the machinery below is unchanged. $C_{L,\max}$ is a config input (placeholder
+pending calibration); $C_{D,\text{maxlift}}$ is evaluated at the extrapolated max-lift $\alpha$.
+The implementation differentiates this $a_\text{brk}(V,\gamma)$ **exactly** via autodiff, so the
+control-affine *closed forms* written below (derived for a *constant* $a_\text{brk}$) are now
+reference only — the live Lie derivatives carry the extra $\partial b/\partial V$, $\partial b/\partial\gamma$ terms.
 
 **Derivation & Authority:**
 * $\dot{b}$ yields vertical acceleration ($\ddot{h}$), exposing $T$ but no controls.

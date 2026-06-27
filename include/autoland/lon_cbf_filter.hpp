@@ -29,7 +29,11 @@ struct LonCBFConfig {
   bool airspeed_hard{false};
 
   double v_safe{0.6};     // hull-safe touchdown sink rate [m/s]
-  double a_brk{3.0};      // braking deceleration for the descent envelope [m/s^2]
+  double a_brk{3.0};      // [DEPRECATED] constant braking accel. The descent
+                          // barrier now computes a_brk(V,gamma) from CLmax; this
+                          // is kept only for logging / plot-script compatibility.
+  double CLmax{1.2};      // max lift coeff (stall ceiling) for a_brk(V,gamma).
+                          // PLACEHOLDER -- calibrate to the real airframe.
   double Vmin{15.0};      // stall-margin airspeed [m/s]
   double Tmax{12.0};      // max thrust [N]
 

@@ -98,8 +98,37 @@ TEST_CASE("L_f b_V equals the airspeed equation", "[lon_cbf]") {
   CHECK(lie.Lf[0] == Approx(V - 0.85 * V).epsilon(1e-12));
 }
 
-// Control authorities (the coefficients of U in the 3rd derivative) must match
-// the closed forms in documentation/water_landing_cbf_math.md sections 3.1-3.2.
+// The descent barrier now uses the speed/path-angle-dependent braking accel
+//   a_brk(V,gamma) = (rho V^2 S / 2m)[CLmax cos g - CDmaxlift sin g] - g,
+// built by makeDescentBarrier(). Check the barrier value matches that formula
+// exactly (catches a constant-a_brk regression or a sign/term error) and that
+// a_brk is positive (and not the old constant 3.0) at a normal approach state.
+TEST_CASE("descent barrier uses speed-dependent a_brk(V,gamma)", "[lon_cbf]") {
+  Setup s;
+  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
+  const double alpha = theta - gamma;
+  const double CLmax = 1.2, v_safe = 0.6;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
+
+  LonStateVec X;
+  X << 30.0, V, gamma, theta, 0.0, 5.0, 0.0;
+  const DescentBarrier b = makeDescentBarrier(a, v_safe, CLmax, V);
+
+  const double CDml = cdAtMaxLift(a, CLmax, V);
+  const double abrk = (0.5 * a.rho * a.Sref / a.mass) * V * V *
+                          (CLmax * std::cos(gamma) - CDml * std::sin(gamma)) - a.g;
+  const double b_expected = V * std::sin(gamma) +
+                            std::sqrt(v_safe * v_safe + 2.0 * abrk * X[LH]);
+
+  CHECK(b(toArray(X)) == Approx(b_expected).epsilon(1e-12));
+  CHECK(abrk > 0.0);                            // real braking authority
+  CHECK(abrk != Approx(3.0).epsilon(1e-3));     // tracks dynamic pressure, not const
+}
+
+// Airspeed control authority (the coefficients of U in the 3rd derivative) must
+// match the closed form in documentation/water_landing_cbf_math.md section 3.2.
+// (The descent barrier now uses the speed-dependent a_brk(V,gamma), which has no
+// simple closed form; it is covered by the a_brk-formula + flow-oracle tests.)
 //
 // NOTE: the doc's ELEVATOR authority models the aero as L(alpha,V), D(alpha,V)
 // only -- it omits the aerodynamic pitch-RATE dependence (dCL/dqhat, dCD/dqhat).
@@ -107,7 +136,7 @@ TEST_CASE("L_f b_V equals the airspeed equation", "[lon_cbf]") {
 // exactly only in the no-rate-aero limit (dQ = 0). The THRUST authority has no
 // aero term and matches with full aero. The separate test below records that
 // full aero diverges from the doc (the engine is the more complete quantity).
-TEST_CASE("autodiff control authorities match the doc closed forms", "[lon_cbf]") {
+TEST_CASE("airspeed control authority matches the doc closed form", "[lon_cbf]") {
   Setup s;
   const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
   const double alpha = theta - gamma;
@@ -124,29 +153,14 @@ TEST_CASE("autodiff control authorities match the doc closed forms", "[lon_cbf]"
   // File-frame body coeffs and rotated drag slope at this state.
   const double CFx = a.off_CFx + a.dAlpha_CFx * alpha + a.dMach_CFx * mach + a.dQ_CFx * qhat;
   const double CFz = a.off_CFz + a.dAlpha_CFz * alpha + a.dMach_CFz * mach + a.dQ_CFz * qhat;
-  const double dCL_da = -a.dAlpha_CFx * std::sin(alpha) - CFx * std::cos(alpha) +
-                        a.dAlpha_CFz * std::cos(alpha) - CFz * std::sin(alpha);
   const double dCD_da = a.dAlpha_CFx * std::cos(alpha) - CFx * std::sin(alpha) +
                         a.dAlpha_CFz * std::sin(alpha) + CFz * std::cos(alpha);
-  const double dL_da = qbar * Sref * dCL_da;
   const double dD_da = qbar * Sref * dCD_da;
   const double Cmde_factor = qbar * Sref * cref / Iyy;  // (rho V^2 S cbar / 2 Iyy)
   const double Cmde = a.dDe_CMy;
 
   LonStateVec X;
   X << 30.0, V, gamma, theta, q, T, 0.0;
-
-  SECTION("descent barrier") {
-    DescentBarrier b{0.6 * 0.6, 3.0};
-    auto lie = barrierLie<3>(a, b, X);
-    // Thrust authority = sin(theta)/m
-    CHECK(lie.LgLf(0, LTDDOT) == Approx(std::sin(theta) / m).epsilon(1e-7));
-    // Elevator authority = (1/m)(T cos th + dL/da cos g - dD/da sin g) * factor * Cmde
-    const double elev = (1.0 / m) *
-                        (T * std::cos(theta) + dL_da * std::cos(gamma) - dD_da * std::sin(gamma)) *
-                        Cmde_factor * Cmde;
-    CHECK(lie.LgLf(0, LDE) == Approx(elev).epsilon(1e-7));
-  }
 
   SECTION("airspeed barrier") {
     AirspeedBarrier b{0.85 * V};
@@ -233,7 +247,7 @@ TEST_CASE("lon filter enforces the hard barrier rows", "[lon_cbf]") {
 
   const AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, X[LV], X[LTH] - X[LGAM]);
   // Descent HOCBF row (hard) must hold: a . U <= rhs.
-  DescentBarrier bd{cfg.v_safe * cfg.v_safe, cfg.a_brk};
+  DescentBarrier bd = makeDescentBarrier(a, cfg.v_safe, cfg.CLmax, X[LV]);
   auto lie = barrierLie<3>(a, bd, X);
   std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
   HocbfRow row = hocbfRow(Lf, lie.LgLf,
@@ -280,7 +294,7 @@ TEST_CASE("drift Lie stack matches a finite-difference flow oracle", "[lon_cbf]"
   };
 
   SECTION("descent barrier") {
-    DescentBarrier b{0.6 * 0.6, 3.0};
+    const DescentBarrier b = makeDescentBarrier(a, 0.6, 1.2, V);
     const auto lie = barrierLie<3>(a, b, X);
     checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
   }

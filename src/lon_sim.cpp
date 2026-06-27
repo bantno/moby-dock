@@ -97,6 +97,7 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.airspeed_hard = getOrB(yc, "airspeed_hard", false);
   cb.v_safe = getOr(yc, "v_safe", 0.6);
   cb.a_brk = getOr(yc, "a_brk", 3.0);
+  cb.CLmax = getOr(yc, "CL_max", 1.2);
   cb.Vmin = getOr(yc, "Vmin", 0.85 * V_app);
   cb.Tmax = getOr(yc, "Tmax", ac_.thrust.T_static);
   cb.c_descent = getArr3(yc, "c_descent", {2.0, 2.0, 2.0});
@@ -132,8 +133,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
 
   LonNominal nominal(sc_.nominal);
   LonCBFFilter filter(sc_.cbf);
-  DescentBarrier bdesc{sc_.cbf.v_safe * sc_.cbf.v_safe, sc_.cbf.a_brk};
   AirspeedBarrier bair{sc_.cbf.Vmin};
+  // bdesc is rebuilt each step: a_brk(V,gamma) depends on the (frozen) aero + V.
 
   std::ofstream csv(csv_path);
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
@@ -162,6 +163,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     // membership condition. psi_1 = L_f b + c1 b; psi_2 = L_f^2 b + (c1+c2)L_f b
     // + c1 c2 b.
     const AeroLocal aero = makeAeroLocal(table_, *mixing_, ac_, X[LV], alpha);
+    const DescentBarrier bdesc =
+        makeDescentBarrier(aero, sc_.cbf.v_safe, sc_.cbf.CLmax, X[LV]);
     const auto ldd = barrierLie<3>(aero, bdesc, X);
     const auto lda = barrierLie<3>(aero, bair, X);
     const auto& cd = sc_.cbf.c_descent;

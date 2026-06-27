@@ -46,7 +46,11 @@ cbf:
   airspeed_hard: false
 
   v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
-  a_brk:  3.0         # braking deceleration for the descent envelope [m/s^2]
+  a_brk:  3.0         # [DEPRECATED] constant braking accel; a_brk is now
+                      # computed as a_brk(V,gamma) from CL_max below. Kept for
+                      # logging / plot-script compatibility.
+  CL_max: 1.2         # max lift coeff (stall ceiling) for a_brk(V,gamma).
+                      # PLACEHOLDER -- calibrate to the real airframe.
   # Stall-margin floor [m/s]. This clean (low-drag, low-thrust) glider is energy
   # limited near the surface: with a high floor the airspeed barrier correctly
   # blocks the nose-down needed to descend and the aircraft parks in a safe hover

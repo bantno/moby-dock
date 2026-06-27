@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cmath>
 #include <vector>
 #include <Eigen/Dense>
 #include "autoland/lie_taylor.hpp"
@@ -21,16 +22,63 @@
 namespace autoland {
 
 // --- Barriers (templated on element type so the Lie engine can autodiff them) -
-struct DescentBarrier {  // b = V sin(gamma) + sqrt(v_safe^2 + 2 a_brk h)
+// Descent (soft-landing) barrier  b = V sin(gamma) + sqrt(v_safe^2 + 2 a_brk h),
+// with the braking acceleration now SPEED / PATH-ANGLE dependent (lift + drag +
+// gravity), not a constant:
+//   a_brk(V,gamma) = (rho V^2 S / 2m)[CLmax cos(gamma) - CDmaxlift sin(gamma)] - g
+// Thrust is deliberately omitted: putting the thrust state T / pitch theta into b
+// would drop the barrier's relative degree below 3 and break the augmented HOCBF
+// alignment (that theta-coupling is the section 3.3 mixed-degree problem). Lift
+// and drag depend only on (V, gamma) -- already in b -- so degree 3 is preserved.
+// Build via makeDescentBarrier() so the frozen-aero constants get filled in.
+struct DescentBarrier {
   double v_safe2{0};
-  double a_brk{0};
+  double rho{0}, Sref{0}, mass{0}, g{0};  // environment / geometry
+  double CLmax{0}, CDmaxlift{0};          // stall ceiling + its drag coefficient
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
+    using std::cos;
     using std::sin;
     using std::sqrt;
-    return X[LV] * sin(X[LGAM]) + sqrt((2.0 * a_brk) * X[LH] + v_safe2);
+    const T V = X[LV], gam = X[LGAM];
+    const T a_brk = (0.5 * rho * Sref / mass) * (V * V) *
+                        (CLmax * cos(gam) - CDmaxlift * sin(gam)) - g;
+    return V * sin(gam) + sqrt(v_safe2 + (2.0 * a_brk) * X[LH]);
   }
 };
+
+// Drag coefficient at the max-lift condition (q = 0), used by a_brk's drag term.
+// The inviscid table has no true stall, so we linearly extrapolate to alpha_max
+// where the rotated C_L = CLmax (one Newton-style step about alpha = 0) and
+// evaluate the rotated C_D there. Cheap and approximate; the drag term itself is
+// a small (~sin gamma) correction.
+inline double cdAtMaxLift(const AeroLocal& a, double CLmax, double V) {
+  const double mach = V / a.a_sound;
+  const double CFx0 = a.off_CFx + a.dMach_CFx * mach;  // alpha = 0, q = 0
+  const double CFz0 = a.off_CFz + a.dMach_CFz * mach;
+  const double CL0 = CFz0;                     // -CFx0 sin0 + CFz0 cos0
+  const double dCL_da0 = a.dAlpha_CFz - CFx0;  // d/dalpha[-CFx sin + CFz cos]|_0
+  const double amax =
+      (std::abs(dCL_da0) > 1e-9) ? (CLmax - CL0) / dCL_da0 : 0.0;
+  const double CFx = a.off_CFx + a.dAlpha_CFx * amax + a.dMach_CFx * mach;
+  const double CFz = a.off_CFz + a.dAlpha_CFz * amax + a.dMach_CFz * mach;
+  return CFx * std::cos(amax) + CFz * std::sin(amax) + a.parasite_CD0;
+}
+
+// Build the descent barrier from the frozen aero + config, filling in the
+// a_brk(V,gamma) constants (including the max-lift drag coefficient at V).
+inline DescentBarrier makeDescentBarrier(const AeroLocal& a, double v_safe,
+                                         double CLmax, double V) {
+  DescentBarrier b;
+  b.v_safe2 = v_safe * v_safe;
+  b.rho = a.rho;
+  b.Sref = a.Sref;
+  b.mass = a.mass;
+  b.g = a.g;
+  b.CLmax = CLmax;
+  b.CDmaxlift = cdAtMaxLift(a, CLmax, V);
+  return b;
+}
 
 struct AirspeedBarrier {  // b_V = V - V_min
   double Vmin{0};

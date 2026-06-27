@@ -30,8 +30,14 @@ Optional per item: `(owner)` and a one-line note.
 ## Modeling / data
 
 - [ ] **True longitudinal trim.** Newton-solve a trim on the lon model itself (current IC is
-      seeded from the 11-state body-axis trim; `V` drifts before the flare).
-- [ ] **Calibrate `C_L,max`** (and the max-lift drag) for `a_brk(V,γ)` — placeholder default.
+      seeded from the 11-state body-axis trim; `V` drifts before the flare). This is also the
+      cause of the small residual descent-`psi < 0` at the start (the IC sits just outside the
+      deeper safe set; it is *not* a control-saturation issue — the QP runs 0 recoveries).
+- [ ] **Compute `C_L,max`** for the airframe. `a_brk(V,gamma)` uses a placeholder `CL_max = 1.2`
+      (config). Needs a real value (CFD/wind-tunnel/flight); also the max-lift drag it implies.
+- [ ] **Remove the old `example.stab` placeholder aero deck.** Migrate the unit tests
+      (`test/*` use `example.stab` via `Setup`) and the body-axis `autoland_sim` default onto
+      `AHAB_combined.stab` first, then delete `example.stab`.
 - [ ] **Calibrate `parasite_CD0` and thrust `k_v`** against flight / tow-tank / thrust-stand data.
 - [ ] **Confirm the mixing map** — OpenVSP control-group definitions vs the default
       (Elevator←δe, Ailerons←δa, Rudder←δr), or set `mixing.matrix`.

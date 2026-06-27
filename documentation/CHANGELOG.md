@@ -39,6 +39,36 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Force-based `a_brk(V,γ)` for the descent barrier; real deck by default
+
+**Branch/commit:** corbin-dev
+**What changed:**
+- Replaced the constant `a_brk = 3.0` with a speed/path-angle-dependent
+  `a_brk(V,γ) = (ρV²S/2m)[CL_max cosγ − CD_maxlift sinγ] − g` (lift + drag + gravity) in
+  `DescentBarrier`, built by `makeDescentBarrier()` and differentiated exactly by autodiff.
+  **Thrust deliberately omitted** — it would drop the barrier's relative degree below 3 and
+  break the augmented HOCBF alignment (backlog, tied to §3.3).
+- `C_L,max` is a new config field (`CL_max`, placeholder 1.2); `C_D,maxlift` is computed from the
+  frozen aero at the extrapolated max-lift α. Added a positivity warning in the filter.
+- Pointed `lon_autoland_sim`'s default aero deck at the **real `AHAB_combined.stab`** (was the
+  `example.stab` placeholder — the source of earlier "violations").
+- Tests: oracle test now auto-revalidates the new barrier's drift stack; replaced the descent
+  closed-form authority check (invalid for state-dependent `a_brk`) with an `a_brk(V,γ)` formula
+  value test. **All 27 pass.**
+**Why:** Make the soft-landing envelope honestly track available lift (tighten at low speed,
+loosen at high) instead of a hand-picked constant.
+**Verified (real AHAB deck):** touchdown sink **0.011 m/s** (within the 0.1 budget), **0 QP
+recoveries** — a big improvement over the constant-`a_brk` baseline (sink 2.18 m/s, 11
+recoveries on the same deck). The residual descent `ψ < 0` at the start is the non-trim initial
+condition, **not** control saturation (smaller class-K gains made it *worse*).
+**Follow-ups / notes for collaborator:** `CL_max` needs calibration; thrust term + lag-aware
+`a_brk` + a true lon trim are in `TODO.md`. The unit tests still use `example.stab` (deck-
+agnostic math); removing `example.stab` is a backlog item.
+**Files touched:** `include/autoland/{hocbf,lon_cbf_filter}.hpp`,
+`src/{lon_cbf_filter,lon_sim}.cpp`, `apps/lon_autoland_sim.cpp`, `data/lon_scenario.yaml`,
+`test/test_lon_cbf.cpp`, `documentation/{water_landing_cbf_math,water_landing_cbf_design}.md`,
+`TODO.md`, `documentation/CHANGELOG.md`.
+
 ## 2026-06-27 — Jack — Add `TODO.md` backlog; retire stale README TODO
 
 **Branch/commit:** corbin-dev

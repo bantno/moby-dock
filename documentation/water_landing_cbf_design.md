@@ -96,19 +96,30 @@ out true aero curvature. Exact math ≠ exact physics.
 
 ## 6. Key design decisions
 
-- **`a_brk` is a constant set-shaping parameter, not a measured acceleration.** The barrier
-  `√(v_safe² + 2·a_brk·h)` is the kinematic braking envelope (boundary of the maximal
-  control-invariant set of a double integrator with bounded deceleration `a_brk`). It defines
-  *which set we stay in*. Currently `a_brk = 3.0 m/s²` (config).
-- **Drag and thrust ARE accounted for — in the exact derivatives, not in `a_brk`.** The HOCBF
-  differentiates through the full wind-axis EOM (lift, drag, thrust), so the *enforcement* side
-  carries the real forces even though the *set-shaping* constant does not. This is the cleaner
-  split: kinematic envelope shapes the set; exact dynamics realize the braking, with the
-  degree-3 HOCBF handling the lift-build-up lag (the relative-degree problem).
-- **Open:** make `a_brk` itself force-based and speed-dependent,
-  `a_brk(V) ≈ ρV²S·C_L,max/(2m)·cosγ − g` (+ drag/thrust), the "honest form" the original doc
-  calls for. This couples the descent and airspeed barriers and still requires a stall ceiling
-  `C_L,max` (the inviscid aero has no lift cap). It addresses magnitude, not the lag.
+- **`a_brk(V,γ)` is force-based and speed/path-angle-dependent** (since this branch):
+  `a_brk(V,γ) = (ρV²S/2m)[C_L,max cosγ − C_D,maxlift sinγ] − g` — the max upward (lift − gravity,
+  with the small drag correction) acceleration available at the current airspeed — substituted
+  into the kinematic envelope `√(v_safe² + 2·a_brk·h)`. The envelope now tightens at low speed
+  and loosens at high speed, as physics demands. Built by `makeDescentBarrier()` and
+  differentiated **exactly** by the autodiff engine (the gradient picks up the new
+  `∂b/∂V`, `∂b/∂γ` terms for free).
+- **Thrust is deliberately omitted** (lift + drag + gravity only). Putting the thrust state `T`
+  or pitch `θ` into `a_brk` would make `b` depend on them directly and drop the relative degree
+  below 3, breaking the degree-3 HOCBF alignment (that θ-coupling is the §3.3 mixed-degree
+  problem). Lift/drag depend only on `(V,γ)` — already in `b` — so degree 3 is preserved. The
+  thrust contribution is a backlog item, coupled to the §3.3 work.
+- **`C_L,max` is a config placeholder (1.2), `C_D,maxlift` is computed.** The inviscid aero has
+  no stall ceiling, so `C_L,max` is an input (TODO: calibrate). `C_D,maxlift` is the rotated drag
+  at the linearly-extrapolated max-lift α (a small, ∝sinγ correction).
+- **Conservatism / positivity.** `a_brk(V,γ)` overestimates *instantly* recoverable braking
+  (it ignores the lift-build-up lag — the relative-degree caveat), and goes negative below
+  ~stall (lift < weight), which would make the radicand ill-posed. The airspeed barrier keeps
+  `V` above stall so `a_brk > 0` in the operating envelope; the filter warns once if not. A
+  lag-aware / committed-flare backup set is the proper conservative treatment (backlog).
+- **Result on the real deck.** With `AHAB_combined.stab`, `C_L,max = 1.2`, `c_descent = [2,2,2]`:
+  touchdown sink **0.011 m/s** (within the 0.1 budget), **0 QP recoveries**. The small residual
+  descent `ψ < 0` at the start is the non-trim initial condition (caveat §8.4), *not* control
+  saturation — confirmed by smaller class-K gains making it worse, not better.
 - **Doc-vs-autodiff divergence (recorded as a test):** the math spec's closed-form elevator
   authority omits the pitch-rate aero terms (`∂C_L/∂q̂`, `∂C_D/∂q̂`); the autodiff captures them.
   They differ by a few percent. The autodiff quantity is the more complete one.
@@ -125,10 +136,13 @@ As of `2b610a3`, the model uses **real AHAB vehicle data**, not placeholders:
 
 - `data/aircraft.yaml`: mass 3.6139 kg; Iyy 0.0521 kg·m²; real Ixx/Izz; thrust `T_static = 50 N`,
   `zcp = 0.15 m`; `parasite_CD0 = 0.030`. (Thrust `k_v` and `parasite_CD0` still uncalibrated.)
-- `data/AHAB_combined.stab`: real combined VSPAero aero deck.
+- `data/AHAB_combined.stab`: real combined VSPAero aero deck. This is now the **default** deck
+  for `lon_autoland_sim` (the old `example.stab` placeholder is kept only for the unit tests;
+  removing it is a backlog item).
 - `data/lon_scenario.yaml`: powered approach `T_set = 2.0 N`, `V_app = 18`, `γ = −3°`,
-  `v_safe = 0.1`, `a_brk = 3.0`, `Vmin = 13.5`, `Tmax = 50`, descent class-K `[2,2,2]`; gains
-  retuned for the real mass.
+  `v_safe = 0.1`, `CL_max = 1.2` (placeholder, drives `a_brk(V,γ)`), `Vmin = 13.5`, `Tmax = 50`,
+  descent class-K `[2,2,2]`; gains retuned for the real mass. (`a_brk = 3.0` remains in the file
+  but is **deprecated/unused** — kept for logging/plot-script compatibility.)
 
 ## 8. Assumptions & limitations
 
@@ -160,10 +174,16 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
 
 ## 9. Open questions / follow-ups
 
-- **Force-based `a_brk(V)`** (§6) — magnitude honesty + descent/airspeed coupling.
+See `TODO.md` for the full backlog. The major threads:
+
+- **Thrust term in `a_brk`** — needs the mixed-relative-degree treatment (§6); couples with §3.3.
+- **Lag-aware / conservative `a_brk`** — a committed-flare backup set so the set is truly
+  invariant despite the lift-build-up lag (§6).
+- **Calibrate `C_L,max`** — currently a placeholder 1.2.
 - **§3.3 contact-force barrier** — attitude-coupled `v_safe(θ)` from von Kármán/Wagner slamming
   theory; the contribution most likely to make this a paper.
-- **True longitudinal trim** — Newton solve on the lon model for a consistent initial condition.
+- **True longitudinal trim** — Newton solve on the lon model for a consistent initial condition
+  (also clears the residual descent `ψ < 0` start transient).
 - **Hardware path** — PX4 insertion point (actuator vs rate/attitude setpoint sets the relative
   degree).
 

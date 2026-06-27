@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <vector>
 
 namespace autoland {
@@ -45,7 +46,23 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
   };
 
   if (cfg_.descent) {
-    DescentBarrier b{cfg_.v_safe * cfg_.v_safe, cfg_.a_brk};
+    const DescentBarrier b = makeDescentBarrier(aero, cfg_.v_safe, cfg_.CLmax, V);
+    // a_brk(V,gamma) must stay positive for the soft-landing envelope to be
+    // well-posed; it is, as long as V stays above ~stall (the airspeed barrier).
+    // Warn once if it ever goes non-positive (the descent row then turns
+    // non-finite and is dropped below -- a silent loss of the guarantee).
+    const double abrk = (0.5 * b.rho * b.Sref / b.mass) * V * V *
+                            (b.CLmax * std::cos(X[LGAM]) -
+                             b.CDmaxlift * std::sin(X[LGAM])) -
+                        b.g;
+    if (abrk <= 0.0) {
+      static bool warned = false;
+      if (!warned) {
+        std::cerr << "[lon_cbf] warning: a_brk(V,gamma) <= 0 at V=" << V
+                  << " m/s -- descent barrier may be ill-posed\n";
+        warned = true;
+      }
+    }
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_descent.begin(), cfg_.c_descent.end());
