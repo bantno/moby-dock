@@ -137,9 +137,12 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
 1. **Self-consistent plant.** The sim plant *is* the CBF model (zero model mismatch), so clean
    barrier-invariance partly reflects structure; it validates the math, not robustness to model
    error.
-2. **`L_f³b` drift not independently verified.** Tests check the *control* authorities vs the
-   spec; the spec never writes `L_f³b`, so a drift error would pass. (Follow-up: a test-only
-   finite-difference cross-check as an oracle.)
+2. **`L_f³b` drift cross-checked (2026-06-27).** A test-only finite-difference *flow oracle*
+   now verifies the full drift stack `{b, L_f b, L_f²b, L_f³b}` for the descent and airspeed
+   barriers against the Taylor-jet engine (agreement ~2.5e-4 on `L_f³b`, finite-difference-
+   limited; a 1% engine error is caught). This closes the prior gap where only the control
+   authorities were checked. See `test/test_lon_cbf.cpp` ("drift Lie stack matches a
+   finite-difference flow oracle").
 3. **Frozen local-affine aero** — autodiff exactness is relative to a C0 piecewise-linear table
    surrogate; aero curvature is lost in 2nd/3rd derivatives.
 4. **Initial condition is not a true longitudinal-model trim** (seeded from the 11-state
@@ -160,7 +163,6 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
 - **Force-based `a_brk(V)`** (§6) — magnitude honesty + descent/airspeed coupling.
 - **§3.3 contact-force barrier** — attitude-coupled `v_safe(θ)` from von Kármán/Wagner slamming
   theory; the contribution most likely to make this a paper.
-- **Independent `L_f³b` check** — finite-difference oracle test.
 - **True longitudinal trim** — Newton solve on the lon model for a consistent initial condition.
 - **Hardware path** — PX4 insertion point (actuator vs rate/attitude setpoint sets the relative
   degree).

@@ -112,7 +112,15 @@ target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 # autodiff is used in public headers (lie_taylor.hpp), so it must be PUBLIC.
 target_link_libraries(autoland_core PUBLIC eigen_headers yaml-cpp::yaml-cpp autodiff_headers)
 target_link_libraries(autoland_core PRIVATE osqpstatic)
-target_compile_options(autoland_core PRIVATE -Wall -Wextra)
+# Warning flags are GCC/Clang spelling; MSVC uses /W and doesn't define M_PI
+# from <cmath> unless _USE_MATH_DEFINES is set. Keep the project buildable on
+# both toolchains without weakening the GCC/Clang build.
+if(MSVC)
+  target_compile_options(autoland_core PRIVATE /W3)
+  target_compile_definitions(autoland_core PUBLIC _USE_MATH_DEFINES)
+else()
+  target_compile_options(autoland_core PRIVATE -Wall -Wextra)
+endif()
 
 # Path to the bundled data directory, so the app/tests can find configs by default.
 target_compile_definitions(autoland_core PUBLIC

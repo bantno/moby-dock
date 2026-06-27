@@ -26,6 +26,58 @@ struct Setup {
         cfg(loadAircraftConfig(kData + "/aircraft.yaml")),
         mx(Mixing::build(cfg, table)) {}
 };
+
+// ---- Finite-difference flow oracle for the drift Lie stack ------------------
+// Independent cross-check of lieDrift<3>. With drift-only dynamics Xdot = f(X)
+// (control U = 0), L_f^k b = d^k/dt^k b(X(t))|_{t=0}. We integrate the SAME
+// frozen-aero field the engine differentiates (AeroLocal `a` held fixed at X0,
+// never re-looked-up along the flow), sample phi(t) = b(X(t)), and
+// central-difference in time. This touches none of lie_taylor.hpp's
+// Taylor/Picard machinery, so it catches a bug in that custom code.
+
+// One RK4 step of the pure drift (control = 0) under the frozen aero `a`.
+LonStateVec driftStep(const AeroLocal& a, const LonStateVec& X, double dt) {
+  const LonCtrlVec Z = LonCtrlVec::Zero();
+  const LonStateVec k1 = lonXdot(a, X, Z);
+  const LonStateVec k2 = lonXdot(a, X + 0.5 * dt * k1, Z);
+  const LonStateVec k3 = lonXdot(a, X + 0.5 * dt * k2, Z);
+  const LonStateVec k4 = lonXdot(a, X + dt * k3, Z);
+  return X + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+}
+
+// Integrate the drift from X0 to time t (t may be negative) with n substeps,
+// fine enough that RK4 error (O(dt^4)) is negligible vs the stencil truncation.
+LonStateVec flowTo(const AeroLocal& a, const LonStateVec& X0, double t, int n) {
+  LonStateVec X = X0;
+  const double dt = t / n;
+  for (int i = 0; i < n; ++i) X = driftStep(a, X, dt);
+  return X;
+}
+
+// {b, L_f b, L_f^2 b, L_f^3 b} from central time-differences of phi(t)=b(X(t)),
+// Richardson-extrapolated over (h, h/2) to cancel the O(h^2) stencil error.
+template <class Barrier>
+std::array<double, 4> lieDriftOracle(const AeroLocal& a, const Barrier& b,
+                                     const LonStateVec& X0, double h, int nsub) {
+  auto phi = [&](double t) { return b(toArray(flowTo(a, X0, t, nsub))); };
+  auto stencils = [&](double hh) {
+    const double f0 = phi(0.0);
+    const double fp1 = phi(hh), fm1 = phi(-hh);
+    const double fp2 = phi(2.0 * hh), fm2 = phi(-2.0 * hh);
+    std::array<double, 4> D;
+    D[0] = f0;
+    D[1] = (fp1 - fm1) / (2.0 * hh);
+    D[2] = (fp1 - 2.0 * f0 + fm1) / (hh * hh);
+    D[3] = (fp2 - 2.0 * fp1 + 2.0 * fm1 - fm2) / (2.0 * hh * hh * hh);
+    return D;
+  };
+  const std::array<double, 4> Dh = stencils(h);
+  const std::array<double, 4> Dh2 = stencils(0.5 * h);
+  std::array<double, 4> L;
+  L[0] = Dh[0];
+  for (int k = 1; k < 4; ++k) L[k] = (4.0 * Dh2[k] - Dh[k]) / 3.0;  // O(h^4)
+  return L;
+}
 }  // namespace
 
 // The augmented EOM's first Lie derivatives must reproduce the raw drift: e.g.
@@ -192,4 +244,50 @@ TEST_CASE("lon filter enforces the hard barrier rows", "[lon_cbf]") {
   // Min-thrust row (hard) must hold: -Tddot <= (c11+c12)Tdot + c11 c12 T.
   HocbfRow tmin = thrustMinRow(X, cfg.c_thrust_min[0], cfg.c_thrust_min[1]);
   CHECK(tmin.a(0, LTDDOT) * U[LTDDOT] <= tmin.rhs + 1e-6);
+}
+
+// Independently cross-check the DRIFT Lie stack {b, L_f b, L_f^2 b, L_f^3 b}
+// against the finite-difference flow oracle. The existing tests verify the
+// control row L_g L_f^2 b vs the doc, but never the drift terms (the doc never
+// writes L_f^3 b), so a bug in the bespoke Taylor-jet engine (lie_taylor.hpp)
+// could slip through. The state carries nonzero q, T, Tdot so the higher-order
+// terms genuinely exercise the thrust/pitch couplings.
+TEST_CASE("drift Lie stack matches a finite-difference flow oracle", "[lon_cbf]") {
+  Setup s;
+  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
+  const double alpha = theta - gamma;
+  const double q = 0.3, T = 5.0, Tdot = 1.0;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
+
+  LonStateVec X;
+  X << 30.0, V, gamma, theta, q, T, Tdot;  // h=30 keeps the descent sqrt safe
+
+  const double h = 1e-2;
+  const int nsub = 200;
+
+  // L_f^0 b is exact (just b(X0)). For k>=1 the accuracy floor is the
+  // finite-difference ORACLE, not the engine: even Richardson-extrapolated time
+  // stencils bottom out around ~1e-4 relative on L_f^3 b. 1e-3 is therefore a
+  // deliberately loose guard -- it still catches any structural engine bug
+  // (a sign flip, a factor of 2, or a missing term are all >= several percent),
+  // which is the point of this cross-check.
+  auto checkStack = [](const std::array<double, 4>& engine,
+                       const std::array<double, 4>& oracle) {
+    CHECK(engine[0] == Approx(oracle[0]).epsilon(1e-9).margin(1e-9));
+    CHECK(engine[1] == Approx(oracle[1]).epsilon(1e-3).margin(1e-6));
+    CHECK(engine[2] == Approx(oracle[2]).epsilon(1e-3).margin(1e-6));
+    CHECK(engine[3] == Approx(oracle[3]).epsilon(1e-3).margin(1e-6));
+  };
+
+  SECTION("descent barrier") {
+    DescentBarrier b{0.6 * 0.6, 3.0};
+    const auto lie = barrierLie<3>(a, b, X);
+    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  }
+
+  SECTION("airspeed barrier") {
+    AirspeedBarrier b{0.85 * V};
+    const auto lie = barrierLie<3>(a, b, X);
+    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  }
 }

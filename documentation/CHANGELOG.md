@@ -38,6 +38,29 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Verify drift Lie stack (`L_f³b`) + make build MSVC-portable
+
+**Branch/commit:** corbin-dev
+**What changed:**
+- Added a test-only **finite-difference flow oracle** that independently cross-checks the
+  drift Lie stack `{b, L_f b, L_f²b, L_f³b}` (descent + airspeed barriers) against the
+  bespoke Taylor-jet engine in `lie_taylor.hpp`. Engine vs oracle agree to ~2.5e-4 on
+  `L_f³b`; a seeded 1% engine error is caught. Closes the prior "L_f³b not independently
+  verified" gap (only the control authorities were checked before).
+- Made the build work under **MSVC** (the only compiler on this Windows machine): guarded the
+  GCC/Clang `-Wall -Wextra` flags behind `if(NOT MSVC)` and defined `_USE_MATH_DEFINES` for
+  `M_PI`. Strictly additive — does not change the GCC/Clang build.
+**Why:** Cheap insurance that the high-order Lie machinery is correct (the autodiff *primitive*
+was never in doubt; the custom Picard/Taylor *iteration* was the untested part). Build fix was
+needed to compile/run the suite locally on Windows.
+**Verified:** all 26 tests pass (`ctest -C Release`); confirmed the new test fails on a 1%
+perturbation, then reverted.
+**Follow-ups / notes for collaborator:** to build on Windows/MSVC, configure with the Visual
+Studio generator (`cmake -S . -B build -G "Visual Studio 17 2022" -A x64`) — Ninja hits an
+OSQP `osqp.lib` multiple-rules error.
+**Files touched:** `test/test_lon_cbf.cpp`, `CMakeLists.txt`,
+`documentation/water_landing_cbf_design.md`, `documentation/CHANGELOG.md`.
+
 ## 2026-06-27 — Jack — Set up `corbin-dev` branch + collaboration docs
 
 **Branch/commit:** corbin-dev (off `lon-cbf-water-landing` @ `2b610a3`)
