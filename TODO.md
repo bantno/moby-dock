@@ -29,10 +29,12 @@ Optional per item: `(owner)` and a one-line note.
 
 ## Modeling / data
 
-- [ ] **True longitudinal trim.** Newton-solve a trim on the lon model itself (current IC is
-      seeded from the 11-state body-axis trim; `V` drifts before the flare). This is also the
-      cause of the small residual descent-`psi < 0` at the start (the IC sits just outside the
-      deeper safe set; it is *not* a control-saturation issue — the QP runs 0 recoveries).
+- [x] **True longitudinal trim (for the IC).** `lonTrim()` Newton-solves the lon EOM for a steady
+      **level-flight** initial condition (`γ=0`, `V̇=γ̇=q̇=0`) — `src/lon_sim.cpp`. Note: this
+      revealed the residual descent-`psi < 0` is **not** the IC (it persists, unchanged) — it is a
+      terminal effect at touchdown (`h→0`); the actual barrier `b` stays ≥ 0 in flight. *Optional
+      follow-up:* also trim the nominal feedforward on the lon model (still uses the body-axis
+      approach trim — harmless, since the controller has feedback).
 - [ ] **Compute `C_L,max`** for the airframe. `a_brk(V,gamma)` uses a placeholder `CL_max = 1.2`
       (config). Needs a real value (CFD/wind-tunnel/flight); also the max-lift drag it implies.
 - [ ] **Remove the old `example.stab` placeholder aero deck.** Migrate the unit tests

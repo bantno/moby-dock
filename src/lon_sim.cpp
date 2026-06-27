@@ -54,6 +54,53 @@ LonStateVec rk4(const AeroTable& t, const Mixing& mx, const AircraftConfig& cfg,
   const LonStateVec k4 = lonXdotFull(t, mx, cfg, X + dt * k3, U);
   return X + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 }
+
+// Steady-flight longitudinal trim of the lon model itself: solve for
+// [alpha, delta_e, T] (with q = Tdot = Tddot = 0) so that [Vdot, gammadot, qdot]
+// vanish at (V, gamma). Mirrors the body-axis trim() Newton scheme but on the
+// lon EOM, so the result is a true equilibrium of THIS model (no startup
+// transient). Thrust T is a state here (Newtons), so unlike the body-axis trim
+// there is no throttle clamp to make the Jacobian singular.
+struct LonTrimResult { double alpha, theta, de, T, residual; bool converged; };
+
+LonTrimResult lonTrim(const AeroTable& table, const Mixing& mx,
+                      const AircraftConfig& cfg, double V, double gamma) {
+  auto residual = [&](const Eigen::Vector3d& v) -> Eigen::Vector3d {
+    LonStateVec X;
+    X << 0.0, V, gamma, gamma + v[0], 0.0, v[2], 0.0;  // alpha=v0, T=v2, q=Tdot=0
+    LonCtrlVec U;
+    U << v[1], 0.0;                                     // de=v1, Tddot=0
+    const LonStateVec xd = lonXdotFull(table, mx, cfg, X, U);
+    return Eigen::Vector3d(xd[LV], xd[LGAM], xd[LQ]);   // Vdot, gammadot, qdot
+  };
+
+  Eigen::Vector3d v(0.05, 0.0, 0.3 * cfg.thrust.T_static);  // alpha, de, T guess
+  const double hh = 1e-6;
+  Eigen::Vector3d R = residual(v);
+  int it = 0;
+  for (; it < 100; ++it) {
+    if (R.norm() < 1e-10) break;
+    Eigen::Matrix3d J;
+    for (int j = 0; j < 3; ++j) {
+      Eigen::Vector3d vp = v, vm = v;
+      vp[j] += hh;
+      vm[j] -= hh;
+      J.col(j) = (residual(vp) - residual(vm)) / (2.0 * hh);
+    }
+    Eigen::Vector3d dv = J.fullPivLu().solve(-R);
+    double step = 1.0;
+    Eigen::Vector3d vn = v + step * dv;
+    Eigen::Vector3d Rn = residual(vn);
+    for (int bt = 0; bt < 20 && Rn.norm() > R.norm(); ++bt) {
+      step *= 0.5;
+      vn = v + step * dv;
+      Rn = residual(vn);
+    }
+    v = vn;
+    R = Rn;
+  }
+  return {v[0], gamma + v[0], v[1], v[2], R.norm(), R.norm() < 1e-6};
+}
 }  // namespace
 
 LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
@@ -118,13 +165,21 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   sc_.dt = getOr(root, "dt", 0.01);
   sc_.t_max = getOr(root, "t_max", 60.0);
 
-  // --- Initial condition ---
+  // --- Initial condition: steady LEVEL-flight trim of the lon model itself.
+  // Starting from a true equilibrium (gamma=0, Vdot=gammadot=qdot=0) reflects an
+  // aircraft cruising level before it captures the approach, and avoids the
+  // startup transient of seeding the IC from the (different) body-axis trim. The
+  // nominal then commands gamma_ref = gamma_app and the aircraft pushes over
+  // into the approach.
   YAML::Node yi = root["initial"];
   const double h0 = getOr(yi, "h0", 40.0);
   const double V0 = V_app + getOr(yi, "dV", 0.0);
-  const double g0 = gamma_app + getOr(yi, "dgamma_deg", 0.0) * kDeg;
-  const double th0 = tr.theta + getOr(yi, "dtheta_deg", 0.0) * kDeg;
-  sc_.X0 << h0, V0, g0, th0, 0.0, nom.T_set, 0.0;
+  const LonTrimResult lt = lonTrim(table_, *mixing_, ac_, V0, 0.0);
+  if (!lt.converged)
+    std::cerr << "[lon_sim] warning: level-flight trim did not converge (res="
+              << lt.residual << ")\n";
+  const double th0 = lt.theta + getOr(yi, "dtheta_deg", 0.0) * kDeg;
+  sc_.X0 << h0, V0, 0.0, th0, 0.0, lt.T, 0.0;
 }
 
 LonTouchdown LonSim::run(const std::string& csv_path) {

@@ -117,9 +117,12 @@ out true aero curvature. Exact math ≠ exact physics.
   `V` above stall so `a_brk > 0` in the operating envelope; the filter warns once if not. A
   lag-aware / committed-flare backup set is the proper conservative treatment (backlog).
 - **Result on the real deck.** With `AHAB_combined.stab`, `C_L,max = 1.2`, `c_descent = [2,2,2]`:
-  touchdown sink **0.011 m/s** (within the 0.1 budget), **0 QP recoveries**. The small residual
-  descent `ψ < 0` at the start is the non-trim initial condition (caveat §8.4), *not* control
-  saturation — confirmed by smaller class-K gains making it worse, not better.
+  touchdown sink **0.011 m/s** (within the 0.1 budget), **0 QP recoveries**, and the descent
+  barrier `b ≥ 0` for the whole flight (min ≈ 0.10). The small residual descent `ψ < 0` is **not**
+  the initial condition (the IC is now a true level-flight trim, §8.4) and **not** control
+  saturation (0 recoveries; smaller class-K gains make it *worse*): it is a **terminal** effect,
+  confined to the last ~0.4 s as `h → 0` at touchdown (the discrete-time crossing). The realized
+  trajectory stays safe — `b`, the actual criterion, never goes negative.
 - **Doc-vs-autodiff divergence (recorded as a test):** the math spec's closed-form elevator
   authority omits the pitch-rate aero terms (`∂C_L/∂q̂`, `∂C_D/∂q̂`); the autodiff captures them.
   They differ by a few percent. The autodiff quantity is the more complete one.
@@ -159,8 +162,12 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
    finite-difference flow oracle").
 3. **Frozen local-affine aero** — autodiff exactness is relative to a C0 piecewise-linear table
    surrogate; aero curvature is lost in 2nd/3rd derivatives.
-4. **Initial condition is not a true longitudinal-model trim** (seeded from the 11-state
-   body-axis trim); airspeed drifts before the flare. Follow-up: Newton trim on the lon model.
+4. **Initial condition is a steady level-flight trim of the lon model** (`lonTrim()` in
+   `src/lon_sim.cpp` — a Newton solve on the lon EOM for `γ=0`, `V̇=γ̇=q̇=0`). The run starts at a
+   true equilibrium (cruising level), then the nominal commands `γ_ref` and the aircraft pushes
+   over into the approach — no more body-axis-seed startup transient / airspeed drift. (The
+   nominal's *feedforward* `θ_trim`/`T_set` still come from the body-axis approach trim; that
+   only feeds a controller with feedback, so the small model mismatch there is harmless.)
 5. **No airspeed control in the nominal** (constant-thrust directive) — airspeed leans on the
    airspeed CBF; a high `Vmin` parks the energy-limited glider in a safe hover instead of landing.
 6. **Soft airspeed barrier** (slack-penalized) — not a hard guarantee. Descent + thrust are hard.

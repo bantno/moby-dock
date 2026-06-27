@@ -39,6 +39,25 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-27 — Jack — Steady level-flight trim for the initial condition
+
+**Branch/commit:** corbin-dev
+**What changed:** Added `lonTrim()` (`src/lon_sim.cpp`) — a Newton solve on the lon EOM for a
+steady **level-flight** equilibrium (`γ=0`, `V̇=γ̇=q̇=0`, mirroring the body-axis `trim()`). The
+sim IC now uses it, so the run starts cruising level and the nominal pushes over into the −3°
+approach (more realistic; no body-axis-seed startup transient).
+**Why:** Asked for a realistic IC; also a step on the "true longitudinal trim" backlog item.
+**Finding (corrects an earlier note):** the level IC did **not** change the residual descent
+`ψ < 0` — so that dip is **not** the initial condition. It is a **terminal** effect in the last
+~0.4 s as `h → 0` at touchdown; the actual barrier `b` stays ≥ 0 in flight (the realized
+trajectory is safe). Design doc §6/§8.4 updated accordingly.
+**Verified:** all 27 tests pass; default run lands at 0.014 m/s within budget, 0 recoveries,
+`b_descent ≥ 0.10` airborne. (Also generated a class-K gain comparison figure showing the four
+`b` barriers; stiff `[100,100,100]` gains under-flare and violate `b_descent` at touchdown,
+gentle `[1,1,1]` stay safe.)
+**Files touched:** `src/lon_sim.cpp`, `documentation/water_landing_cbf_design.md`, `TODO.md`,
+`documentation/CHANGELOG.md`.
+
 ## 2026-06-27 — Jack — Force-based `a_brk(V,γ)` for the descent barrier; real deck by default
 
 **Branch/commit:** corbin-dev
