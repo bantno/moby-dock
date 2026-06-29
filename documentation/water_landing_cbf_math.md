@@ -152,6 +152,66 @@ Because thrust is an augmented state, its physical limits must be enforced via s
 * Relative Degree: 2 (with respect to $\ddot{T}$)
 * Constraint: $\ddot{T} \le -(c_{2,1} + c_{2,2})\dot{T} + c_{2,1}c_{2,2}(T_\text{max} - T)$
 
+### 3.5 Impact-Load Barrier (Implemented — NACA TN 1516)
+The rigorous realization of the §3.3 contact-load idea, using the closed(ish)-form peak
+load factor of Milwitzky's V-bottom step-landing theory (NACA TN 1516) instead of a
+hand-shaped $v_\text{safe}(\theta)$. Code: `include/autoland/impact_barrier.hpp`,
+`scripts/precompute_impact_clf.py`. Reference: `documentation/impact_load_barrier_spec.md`.
+
+**Peak load factor at contact.** With trim $\tau=\theta-\theta_\text{keel}$, flight-path
+$\gamma_0=-\gamma$, sink $\dot y_0 = -V\sin\gamma$, and the approach parameter
+$$
+\kappa = \frac{\sin\tau}{\sin\gamma_0}\cos(\tau+\gamma_0) \quad\text{(eq 20)},
+$$
+the peak CG load factor (g) is
+$$
+n_\text{peak} = C_{lf}(\kappa)\,\dot y_0^{\,2}\,\Big(\tfrac{\alpha_\text{hull}}{W g^2}\Big)^{1/3},
+\qquad
+\alpha_\text{hull} = \frac{f(\beta)^2\,\phi(A)\,\rho_w\,\pi}{6\sin\tau\cos^2\tau},
+$$
+with $f(\beta)=\tfrac{\pi}{2\beta}-1$ (eq 45), $\phi(A)=1-\tfrac{\tan\tau}{2\tan\beta}$ (eq 49),
+and $W=mg$. The **load-factor coefficient** $C_{lf}(\kappa)$ (NOT the aerodynamic lift
+coefficient $C_{L,\max}$) has no closed form — the velocity ratio $u=\dot y/\dot y_0$ at
+maximum acceleration is the root of the transcendental eq 27,
+$$
+\kappa\!\left[\tfrac{1}{1+\kappa}-\tfrac{1}{u+\kappa}\right]
+= \ln\frac{(9u+6\kappa)(u+\kappa)}{(7u+6\kappa)(1+\kappa)},
+\qquad
+C_{lf}=\frac{2u(u+\kappa)^2}{3u+2\kappa}\Big(\tfrac{7u+6\kappa}{2u}\Big)^{1/3}\ \text{(eq 25)},
+$$
+so it is precomputed offline over $\kappa\in[0.2,10]$ and interpolated (anchor:
+$C_{lf}(0)=0.6123$ at $u=7/9$).
+
+**Barrier (height-relaxed, Option A).** Height above water $z$ enters only through a
+nonnegative budget that vanishes at the surface:
+$$
+b_\text{imp}(X) = \big(n_\text{limit}-n_\text{peak}(\tau,\gamma_0,\dot y_0)\big) + \Phi(z),
+\qquad \Phi(z)=N_b\big(1-e^{-z/z_s}\big).
+$$
+At $z=0$ this is the true load constraint $n_\text{limit}-n_\text{peak}\ge0$; aloft $\Phi\to N_b$
+makes it trivially satisfied (touchdown-only). $K_0=(\alpha_\text{hull}/Wg^2)^{1/3}$ and a
+local-affine $C_{lf}(\kappa)\approx C_{lf,0}+\tfrac{dC_{lf}}{d\kappa}(\kappa-\kappa_0)$ are
+**frozen** at the evaluation point so the templated barrier is smooth (no $\sqrt[3]{\cdot}$ in
+the Taylor jet) while the attitude coupling stays live through $\kappa$.
+
+**Relative degree & the affine-row obstruction.** $b_\text{imp}$ is relative degree **2 via
+the elevator** ($\theta\!\to\!q\!\to\!\delta_e$, since $n_\text{peak}$ depends on $\theta$
+through $\kappa$) and **3 via thrust** ($V\!\to\!T\!\to\!\dot T\!\to\!\ddot T$). A single
+control-affine row cannot mix the two: the exact third derivative
+$$
+\dddot b = L_F^3 b + (L_{G}L_F^2 b)u + L_F(L_{G}L_F b)u + (L_{G}L_{G}L_F b)u^2 + (L_{G}L_F b)\dot u
+$$
+carries non-affine $u^2$ and $\dot u$ terms once the elevator has entered at degree 2.
+It is therefore enforced as a **clean degree-2 HOCBF** (the §3.3 architecture decision): the
+thrust column $L_{G_{\ddot T}}L_F b_\text{imp}=0$ drops out and the elevator/flare acts alone,
+$$
+\underbrace{L_{G_{\delta_e}}L_F b_\text{imp}}_{a}\,\delta_e \;\ge\; -\big(L_F^2 b_\text{imp}
++ (c_1+c_2)L_F b_\text{imp} + c_1 c_2\, b_\text{imp}\big).
+$$
+Thrust still bounds impact load through the descent/sink-rate barrier (§3.1). The row is
+assembled only in the model-valid window (below $z_\text{gate}$, descending, positive trim,
+$\kappa$ clamped to $[0.2,10]$) and softened with a height-scheduled slack (Option C).
+
 ---
 
 ## 4. Final QP Architecture
@@ -166,7 +226,8 @@ $$
 
 1.  **Descent-Rate (Degree 3):** Shared authority between $\delta_e$ and $\ddot{T}$.
 2.  **Airspeed (Degree 3):** Shared authority between $\delta_e$ and $\ddot{T}$.
-3.  **Contact-Force (Degree 2):** Enforced exclusively by $\delta_e$.
+3.  **Impact-Load (Degree 2, §3.5):** Enforced exclusively by $\delta_e$; height-relaxed
+    via $\Phi(z)$ and softened with a height-scheduled slack. Realizes the §3.3 contact-load idea.
 4.  **Min Thrust (Degree 2):** Enforced exclusively by $\ddot{T}$. (Hard constraint.)
 5.  **Max Thrust (Degree 2):** Enforced exclusively by $\ddot{T}$. (Hard contraint.)
 

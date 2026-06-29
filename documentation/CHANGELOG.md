@@ -39,6 +39,25 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-28 — Jack — Merge `water-impact-cbf` into `corbin-dev`
+
+**Branch/commit:** corbin-dev (merge of `origin/water-impact-cbf` `8e2770a`)
+**What changed:** Fetched and merged the collaborator's `water-impact-cbf` branch — Brian's
+hydrodynamic impact-load HOCBF barrier (NACA TN 1516); see his entry below for the substance.
+The branch forked from `eaa3076` (before the `AHAB_combined` consolidation), so this is a real
+3-way merge. **All code/data merged cleanly**; the only conflicts were the two append-only docs
+(`CHANGELOG.md`, `TODO.md`), resolved by **keeping both sides' entries** (Brian's impact-barrier
+work folded in alongside Jack's deck-consolidation + over-speed-barrier work). The impact module
+adds two new aero decks of its own (`AHAB_alpha_beta_sweep.stab`,
+`AHAB_control_surface_effectiveness.stab`) — distinct filenames, no collision with the
+`AHAB_combined` consolidation.
+**Why:** Bring the deferred §3.3 contact-force / slam-load barrier (the highest research-value
+thread) onto `corbin-dev`.
+**Follow-ups / notes for collaborator:** verify build + tests on the merged tree (the impact
+branch reported 34/35, with `#19` a pre-existing body-axis failure unrelated to this work).
+**Files touched (merge):** conflict resolution in `documentation/CHANGELOG.md`, `TODO.md`; all
+other impact-module files merged without conflict.
+
 ## 2026-06-27 — Jack — Merge `origin/main`; reconcile deck cleanup with collaborator
 
 **Branch/commit:** corbin-dev (`106159e` merge; `73098b9` consolidation)
@@ -85,6 +104,60 @@ combined deck (exit 0). No code besides the deck path changed.
 example.stab" item revised to reflect the keep-decision.
 **Files touched:** `apps/autoland_sim.cpp`, `test/test_cbf.cpp`, `figures/README.md`,
 `data/` (removed `AHAB_sweep.stab`, `AHAB 2.stab`), `TODO.md`, `documentation/CHANGELOG.md`.
+
+## 2026-06-28 — Brian — Add hydrodynamic impact-load HOCBF barrier (NACA TN 1516)
+**Branch/commit:** water-impact-cbf
+**What changed:** New independent CBF-QP row that bounds the **peak CG load factor at
+water touchdown**, derived from NACA TN 1516 (Milwitzky 1948). The barrier is
+`b = (n_limit − n_peak(θ,γ,V)) + Φ(z)` with `n_peak = K0·ẏ₀²·Clf(κ)` (peak load factor,
+g), the approach parameter `κ = sin τ/sin γ₀ · cos(τ+γ₀)`, and a height-relaxed term
+`Φ(z) = Nb(1−e^{−z/zs})` that makes it touchdown-only. New files: an offline precompute
+`scripts/precompute_impact_clf.py` (solves the transcendental eq 27 for the velocity
+ratio, evaluates eq 25, verifies the `Clf(0)=0.6123` anchor) → generated table
+`include/autoland/impact_clf_table.hpp`; the barrier itself in
+`include/autoland/impact_barrier.hpp` (`clfLookup`, `ImpactLoadBarrier`,
+`makeImpactLoadBarrier`). Wired into `LonCBFFilter` behind an `impact`/`impact_hard`
+flag set with new config (`n_limit`, `beta`, `rho_water`, `Nb`, `zs`, `tau_keel`,
+`z_gate`, `eps_g0`, `impact_slack_lo/hi`, `c_impact`) in `LonCBFConfig` +
+`lon_scenario.yaml` + the `lon_sim` loader. Added an `exp()` overload to the Taylor-jet
+Lie engine (`lie_taylor.hpp`) for `Φ`. The sim logs `b_impact,n_peak,kappa_imp` and the
+degree-2 `psi1/psi2_imp` + `res_imp`, and prints the impact ψ-minima.
+**Why:** Bound the structural *slam load* at hull contact — which depends on dead rise,
+trim, and sink rate, not just sink rate (the descent barrier's kinematic cap). This is
+the attitude-coupled contact-load constraint flagged as the §3.3 research item.
+**Design choices:**
+- **Degree-2 HOCBF, elevator-enforced.** The barrier is relative degree 2 via the
+  elevator (θ→q→δe) and 3 via thrust (T→Tdot→Tddot). A single affine row can't mix the
+  two (the elevator's degree-2 entry pushed to degree 3 yields non-affine u²/u̇ terms),
+  so it's built as a clean degree-2 row (`barrierLie<2>` + 2 class-K gains): thrust's
+  column in `L_gL_f b` is exactly 0 and drops out; the flare enforces it. Thrust still
+  bounds impact load via the existing descent/sink-rate barrier (spec §4).
+- **Frozen K0 + local-affine `Clf(κ)`** at the eval point (mirrors `makeDescentBarrier`),
+  so the templated barrier is smooth with no cbrt/pow in the Taylor path while the
+  attitude coupling stays live through `κ`.
+- **Activation:** Option A height-relaxed `Φ(z)` (primary) + Option C height-scheduled
+  slack (`impact_slack_lo→hi`) backstop. Plus a **model-validity gate** — the row is only
+  assembled below `z_gate` AND while descending with positive trim (NACA TN 1516's
+  validity domain); outside it the prediction is meaningless (κ<0) and would feed a
+  huge-coefficient row to the QP.
+- **Placeholders:** `n_limit=3 g`, `beta=22.5°`, `rho_water=1000` (fresh), `Nb=10`,
+  `zs=2 m`. Soft + enabled by default and sized **non-binding** (additive safety, zero
+  trajectory change), mirroring how the upper-airspeed barrier was introduced.
+**Verified:** **34/35 tests pass** — incl. 6 new (clfLookup monotone/clamp, closed-form
+value, relative-degree thrust-drops-out, drift flow-oracle for the degree-2 stack +
+`exp()`, Φ height-relaxation, hard-enforcement under a violating nominal). The 1
+remaining failure (`#19`, `test_cbf.cpp`) is **pre-existing** (old body-axis path, throws
+unrelated to this work). Default sim run **unchanged**: touchdown 0.0137 m/s, 0
+recoveries; `impact: min psi1=5.84, psi2=14.11 ≥ 0`; over the active window
+`n_peak ≤ 0.17 g « n_limit=3`, `κ∈[0.001,1.149]`, slack ≡ 0 (row never binds).
+**Follow-ups / notes for collaborator:** `n_limit`/`beta`/`Nb`/`zs`/`c_impact` need
+calibration/tuning (new `TODO.md` items). The full mixed-degree (2/3) treatment and a
+predictive/backup-set CBF remain open (§3.3). CSV gained 6 columns — name-keyed plot
+scripts are unaffected. Source paper added at `documentation/19930082553.pdf`.
+**Files touched:** `include/autoland/{lie_taylor,impact_barrier,impact_clf_table,
+lon_cbf_filter}.hpp`, `src/{lon_cbf_filter,lon_sim}.cpp`, `scripts/precompute_impact_clf.py`,
+`data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`documentation/{impact_load_barrier_spec,water_landing_cbf_design,CHANGELOG}.md`, `TODO.md`.
 
 ## 2026-06-27 — Jack — Add maximum-airspeed (over-speed) HOCBF barrier
 
