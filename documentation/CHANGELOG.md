@@ -39,6 +39,110 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-29 — Brian — Altitude-sensor model + LPF, best-effort QP fallback, per-constraint slack weights, gain Monte-Carlo
+**Branch/commit:** water-impact-cbf (sensor model + best-effort fallback + Lie test committed in `acdc27b`; per-constraint-slack refactor + gain study in the working tree)
+**What changed:**
+1. **Altitude-measurement sensor model + low-pass filter** (`lon_cbf_filter.hpp`, `lon_sim.cpp`).
+   The CBF now acts on a noisy, low-pass-filtered altitude `h_filt(h + N(0,σ²))` while the
+   plant still integrates the TRUE `h`. New YAML knobs: `h_meas_stddev` [m], `h_lpf_tau` [s]
+   (first-order LPF `α=dt/(τ+dt)`, `f_c=1/2πτ`), `h_meas_seed` (RNG seed, exposed for the
+   Monte-Carlo below). CSV gained `h_meas, h_filt`. Defaults (σ=0, τ=0) reproduce the
+   perfect-altitude behavior exactly.
+2. **Best-effort QP infeasibility fallback** (`lon_cbf_filter.cpp`). When the hard-constrained
+   QP is infeasible the filter no longer softens-and-tracks-nominal (which deletes the
+   constraint's effect); it solves a **minimum-violation** QP that penalizes each hard row's
+   slack at a dominant weight (`kBestEffortHardPenalty=1e6`), spending the actuators to drive
+   the hard-barrier violation toward zero. Last resort is the box-clamped nominal.
+3. **QP objective refactor — per-constraint slack weights + identity control**
+   (`lon_cbf_filter.{hpp,cpp}`, `lon_sim.cpp`, `lon_scenario.yaml`). Replaced the single global
+   `slack_penalty` (and the impact Option-C **height-scheduled** slack) with per-constraint,
+   YAML-settable weights `w_slack_{descent,airspeed,airspeed_upper,impact}`; dropped the control
+   weights `w_de`/`w_Tddot` for an identity control cost `½‖u−u_nom‖²`. Hard rows still carry no
+   slack. Kept the penalty **quadratic** `½wδ²` (not linear `wδ`): a pure-linear penalty leaves
+   `P` singular on the slacks and OSQP then fails to converge on ~hundreds of feasible steps,
+   firing best-effort spuriously (verified: identity+linear → 316 recoveries on the no-noise
+   case; quadratic → 0, same landing).
+4. **Lie-derivative verification test** (`test/test_lie_derivatives.cpp`, +CMake). 5 textbook
+   systems (double/triple integrator, pendulum, `ẋ=x²`) with hand-computed `L_f^k b`,
+   `L_gL_f^{r-1}b`, and HOCBF rows, cross-checking the Taylor-jet Lie engine and `hocbfRow`'s
+   class-K (elementary-symmetric) coefficient placement to ~1e-10. Complements the existing
+   finite-difference flow oracle.
+5. **Gain robustness study** (`results/cbf_gain_{sweep,montecarlo}.{csv,md}`). A single-seed
+   `c_descent` sweep picked `[1,2,128]`, but it's a razor-sharp single-realization optimum
+   (overfit — `c3=128` ≈ a deadbeat pole at the timestep). A proper gain×seed **Monte-Carlo
+   (40 common-random-number seeds)** showed `[1,2,128]` averages 0.55 m/s (not 0.024) across
+   seeds and identified the robust optimum **`c_descent=[1,2,32]`** (two slow poles + one
+   moderate-fast pole; mean 0.52, worst-case 1.17 m/s) — now set in `lon_scenario.yaml`.
+**Why:** Study the CBF under a realistic noisy altimeter; make the infeasibility fallback
+actually drive toward safety instead of deleting the constraint; give per-constraint control
+over slack firmness; and put gain selection on a multi-seed footing instead of overfitting one
+noise draw. The analysis figure `figures/lon_alt_noise_lpf.png` (ideal / filtered / no-CBF,
+8 panels) tracks all of this.
+**Follow-ups / notes for collaborator:**
+- The per-constraint-slack refactor + gain study (`results/`) are **uncommitted**; commit when ready.
+- Slack kept quadratic for OSQP robustness; if you want the L1/exact-penalty (linear) form it
+  needs a slack rescale + looser OSQP tolerances.
+- The impact barrier's height-scheduled slack (Option C) was **removed** for a constant
+  `w_slack_impact`; re-add as a scheduled weight if you want cheap-aloft/firm-near-surface back.
+- No gain keeps the descent barrier ≥ −0.5 in >~63% of seeds at σ=0.5 m — that's a
+  noise/barrier-steepness limit (tune σ, `v_safe`, `τ`), not a gain-tuning one.
+**Files touched:** `include/autoland/lon_cbf_filter.hpp`, `src/lon_cbf_filter.cpp`,
+`src/lon_sim.cpp`, `data/lon_scenario.yaml`, `test/test_lie_derivatives.cpp`, `CMakeLists.txt`,
+`results/cbf_gain_{sweep,montecarlo}.{csv,md}`, `figures/lon_alt_noise_lpf.png`.
+
+---
+
+## 2026-06-29 — Brian — Fix silent NaN-drop of the descent (sink-rate) barrier + un-mask the diagnostics
+**Branch/commit:** water-impact-cbf
+**What changed:** Three coupled fixes to a latent failure in the descent barrier
+`b = V sinγ + √(v_safe² + 2·a_brk(V,γ)·h)` — the **only hard sink-rate guarantee**:
+1. **Non-finite-proof radicand** (`hocbf.hpp`). When `v_safe² + 2·a_brk·h < 0` the raw
+   `√` returned NaN, the filter's finiteness guard then **silently dropped the row** from
+   the QP (coeffs→0, rhs→+∞), and the NaN was masked in the ψ-minima (`std::min` ignores
+   NaN). `DescentBarrier::operator()` now floors the radicand with a smooth C∞ positive map
+   `arg_pos = ½(arg + √(arg² + 4·eps_r²))` (new `eps_r = 0.01 m²/s²` field, a numerical
+   regularizer — *not* a tuning knob). `b` stays finite and smooth, so the Lie jet and QP
+   row stay well-posed and the barrier degrades to "flare as hard as possible" instead of
+   vanishing.
+2. **Dropped rows annunciated** (`lon_cbf_filter.{hpp,cpp}`). Removed the once-only
+   `static bool warned`. The filter now exposes per-call `lastDroppedRows()`,
+   `lastHardDropped()`, and `lastDescentInfeasible()` (the `a_brk ≤ 0` root-cause signal).
+3. **NaN-guarded diagnostics** (`lon_sim.cpp`). ψ-minima go through a finiteness-guarded
+   `gmin` with per-barrier non-finite-sample counters; the summary adds a **"CBF
+   row-assembly faults"** line (so `recoveries=0` can no longer imply health — dropping the
+   binding row makes the QP trivially feasible) and tags any ψ line with excluded samples.
+   CSV gained `n_rows_dropped, hard_dropped, desc_infeasible` (appended at end).
+**Why:** The trigger (`a_brk ≤ 0`, i.e. no available braking authority — low airspeed near
+the surface) is **common-mode** with the soft `Vmin` barrier yielding and the elevator-only
+impact barrier losing authority at low q̄, so all three sink protections could degrade
+together with **no fault flag** and every health metric reading clean. Two reachable cases:
+the **touchdown sample of every nominal run** (`h` integrates slightly < 0 with `v_safe²≈0`),
+and any **`CL_max` recalibration downward** (an uncalibrated placeholder) that moves the
+`a_brk=0` crossover into the flown envelope.
+**Verified:** all **16 `[lon_cbf]` cases pass (143 assertions)**; the lone full-suite failure
+(`test_cbf.cpp:218`, missing `data/AHAB_sweep.stab`) is **pre-existing** (confirmed identical
+on HEAD with the patch stashed) and unrelated (body-axis path). Before→after:
+- **Baseline** (CL_max=1.2): descent non-finite CSV cells **4→0**; touchdown sink
+  **0.8023→0.8024 m/s** (unchanged to 4 s.f. — the `eps_r` bias is ~1e-8, no trajectory
+  change); faults line reports `0 / 0 HARD / 0 a_brk≤0`.
+- **Repro** (CL_max=0.30 → `a_brk≤0` over the descent): descent non-finite cells
+  **2327 (100% of flight)→0**; the barrier now stays in the QP and **flares** — touchdown
+  **1.63 m/s slam → 0.725 m/s** — and the summary loudly reports `a_brk≤0 on 5989 steps`
+  with the *real* `descent ψ = −3.4 / −4.83` instead of a swallowed NaN. Previously this case
+  ran with the barrier absent the entire flight while printing `recoveries: 0` and a positive
+  `min ψ1`.
+**Follow-ups / notes for collaborator:** This makes the failure **visible and graceful**, not
+**safe** — when `a_brk ≤ 0` the envelope is genuinely infeasible and the barrier still can't
+deliver a guarantee it physically lacks. The proper terminal fix is the **controllability /
+handoff guard** (declare "cannot guarantee" + hold/abort rather than emit a control as if it
+could) — new `TODO.md` item, related to the existing elevator-authority guard. CSV columns
+were **appended** to preserve positions; name-keyed plot scripts are unaffected, but any
+positional reader asserting an exact column count needs a +3 bump. A regression test asserting
+the summary `min ψ` agrees with the per-sample CSV would lock this in.
+**Files touched:** `include/autoland/{hocbf,lon_cbf_filter}.hpp`,
+`src/{lon_cbf_filter,lon_sim}.cpp`, `test/test_lon_cbf.cpp`, `TODO.md`,
+`documentation/CHANGELOG.md`.
+
 ## 2026-06-28 — Brian — Add hydrodynamic impact-load HOCBF barrier (NACA TN 1516)
 **Branch/commit:** water-impact-cbf
 **What changed:** New independent CBF-QP row that bounds the **peak CG load factor at

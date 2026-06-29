@@ -240,6 +240,7 @@ TEST_CASE("lon filter enforces the hard barrier rows", "[lon_cbf]") {
   Setup s;
   LonCBFConfig cfg;             // descent + thrust hard; airspeed soft
   cfg.Vmin = 13.0;
+  cfg.Vmin_ground = 13.0;       // constant floor (collapse the altitude schedule)
   LonCBFFilter filter(cfg);
 
   LonStateVec X;
@@ -361,6 +362,7 @@ TEST_CASE("lon filter enforces the upper airspeed barrier when hard", "[lon_cbf]
   cfg.airspeed_upper = true;
   cfg.airspeed_upper_hard = true;
   cfg.Vmax_air = 18.5;          // just above the state's V -> barrier is active
+  cfg.Vmax_ground = 18.5;       // constant ceiling (collapse the altitude schedule)
   LonCBFFilter filter(cfg);
 
   LonStateVec X;

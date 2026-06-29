@@ -11,8 +11,17 @@
 # (V_app, gamma_app_deg); fields below override them.
 # =============================================================================
 
-V_app: 18.0           # approach airspeed [m/s]
+V_app: 15.0           # approach airspeed [m/s]
 gamma_app_deg: -10.0   # nominal flight-path angle [deg] (negative = descent)
+
+# Piecewise glideslope: the nominal holds gamma_app_deg until the aircraft descends
+# through h_switch [m], then switches to gamma2_app_deg and holds that to ground
+# contact. Use this to fly a shallow approach that steepens for the flare (or the
+# reverse). Set h_switch <= 0 (or gamma2_app_deg = gamma_app_deg) for a single
+# segment. NOTE: gamma_app_deg also seeds the trim / initial condition; the segment-
+# 2 angle only changes the in-flight reference (the PI loop slews onto it).
+gamma2_app_deg: -3.0   # segment-2 flight-path angle [deg] (below h_switch)
+h_switch:       8.0    # glideslope transition altitude [m] (0 => single segment)
 
 dt:    0.01
 t_max: 200.0
@@ -26,7 +35,7 @@ initial:
 
 # --- Nominal controller -------------------------------------------------------
 nominal:
-  T_set: 2.0           # [N] powered approach: carry thrust so there's airspeed
+  T_set: 0.0           # [N] powered approach: carry thrust so there's airspeed
                       # energy to flare (retuned for real mass 3.61 kg / T_static 50 N)
   Kp_T:  4.0          # thrust PD: Tddot = Kp_T (T_set - T) - Kd_T Tdot
   Kd_T:  4.0
@@ -67,6 +76,24 @@ cbf:
   # nominal approach (which flies ~18 m/s and only slows), so the trajectory is
   # unchanged; lower it to see the upper airspeed barrier actively cap V.
   V_max:  25.0
+
+  # --- Altitude-scheduled airspeed limits --------------------------------------
+  # Vmin/V_max above are the ALOFT limits; near the surface the floor and ceiling
+  # ramp to the *_ground values over scale height v_sched_h:
+  #   Vlim(h) = V_ground + (V_aloft - V_ground)(1 - exp(-h/v_sched_h)).
+  # Purpose: the aircraft was touching down too fast (~17 m/s). Tightening the
+  # ceiling toward the surface commands it to bleed speed for a lower-energy water
+  # contact, and relaxing the floor lets it reach (or dip just below) stall right
+  # before touchdown. Stall ~10.6 m/s here (sqrt(2mg / rho S CL_max), S=0.425,
+  # CL_max=1.2). Set *_ground = the aloft value to recover a constant barrier.
+  Vmin_ground:  6    # relaxed stall floor at the surface [m/s] (< V_stall ~10.6:
+                       # permits a near-stall touchdown, per "ok to stall just
+                       # before touchdown"). Aloft Vmin=13.5 keeps stall margin.
+  Vmax_ground:  10.0   # tightened ceiling at the surface [m/s] (~1.13 V_stall):
+                       # squeezes the touchdown speed down from ~17 toward stall.
+  v_sched_h:    20.0    # schedule scale height [m]: ~63% of the ramp within 5 m of
+                       # the water, ~95% within 15 m; rest of the approach is aloft.
+
   Tmax:   50.0         # max thrust [N] (T_static)
 
   # --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) ---
@@ -84,21 +111,28 @@ cbf:
   tau_keel_deg: 0.0    # keel incidence (tau = theta - tau_keel) [deg]
   z_gate:   10.0       # assemble the impact row only below this height [m] (efficiency)
   eps_g0:   0.02       # smooth floor on sin(gamma0): caps the planing singularity gamma0->0
-  impact_slack_lo: 1.0e2   # Option C slack penalty aloft (cheap to relax)
-  impact_slack_hi: 1.0e4   # Option C slack penalty near the surface (firmly enforced)
 
   # Class-K gains (linear alpha_i(s) = c_i s). Descent/airspeed are degree 3.
-  c_descent:    [2.0, 2.0, 2.0]   # cd2-style envelope; deepest flare this airframe
-                                  # achieves at a_brk=3 (touchdown sink ~0.32 m/s)
-  c_airspeed:       [2.0, 2.0, 2.0]
-  c_airspeed_upper: [2.0, 2.0, 2.0]
+  # c_descent:    [1.0, 2.0, 32.0]  # two slow outer poles + one fast inner pole
+                                  # (s+1)(s+2)(s+32): robust gentle noisy touchdown
+                                  # (Monte-Carlo over 40 seeds: mean 0.52, worst 1.17
+                                  # m/s; see results/cbf_gain_montecarlo_summary.md)
+  c_descent:     [1.0, 1.0, 1.0]
+  c_airspeed:       [2., 2., 2.]
+  c_airspeed_upper: [2., 2., 2.]
   c_thrust_min: [6.0, 6.0]
   c_thrust_max: [6.0, 6.0]
   c_impact:     [2.0, 2.0]         # impact-load barrier class-K gains (degree 2)
 
-  w_de:    1.0
-  w_Tddot: 0.01       # cheap thrust-jerk so the QP prefers throttle over elevator
-  slack_penalty: 10000.0
+  # QP objective: J = 1/2||u - u_nom||^2 + sum_i w_slack_i * delta_i  (linear slack
+  # penalty, identity control cost). Per-constraint w dictates softness: larger =
+  # firmer (large enough => enforced exactly when feasible). Only SOFT barriers use
+  # these; HARD ones (*_hard flags, thrust limits) carry no slack. descent_hard is
+  # true here so w_slack_descent is inactive unless you soften it.
+  w_slack_descent:        10000.0
+  w_slack_airspeed:       10000.0
+  w_slack_airspeed_upper: 10000.0
+  w_slack_impact:         10000.0
 
   de_min_deg: -28.6
   de_max_deg:  28.6

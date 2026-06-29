@@ -29,7 +29,8 @@ namespace autoland {
 // Thrust is deliberately omitted: putting the thrust state T / pitch theta into b
 // would drop the barrier's relative degree below 3 and break the augmented HOCBF
 // alignment (that theta-coupling is the section 3.3 mixed-degree problem). Lift
-// and drag depend only on (V, gamma) -- already in b -- so degree 3 is preserved.
+// and drag depend only on (V, gamma) -- already in b -- so degree 3 is preserved
+// (h enters only the radicand, at relative degree 4, so it does not change that).
 // Build via makeDescentBarrier() so the frozen-aero constants get filled in.
 struct DescentBarrier {
   double v_safe2{0};
@@ -96,24 +97,61 @@ inline DescentBarrier makeDescentBarrier(const AeroLocal& a, double v_safe,
   return b;
 }
 
-struct AirspeedBarrier {  // b_V = V - V_min
-  double Vmin{0};
+// Altitude-scheduled velocity limit: the surface value V_ground ramping smoothly
+// up to the aloft value V_air over scale height hs:
+//   Vlim(h) = V_ground + (V_air - V_ground)(1 - exp(-h/hs)).
+// Vlim(0) = V_ground, -> V_air as h -> inf, and it is C-infinity so the exact-Lie
+// Taylor jet stays well-posed. Set V_ground = V_air to recover a constant limit.
+template <class T>
+T schedVlim(const T& h, double V_air, double V_ground, double hs) {
+  using std::exp;
+  // Multiply by the reciprocal scale (Taylor has no operator/ by a scalar).
+  return V_ground + (V_air - V_ground) * (1.0 - exp(h * (-1.0 / hs)));
+}
+
+// Lower airspeed barrier  b = V - Vmin(h), with an ALTITUDE-SCHEDULED stall floor:
+// aloft the full stall-margin floor Vmin_air applies; near the surface it relaxes
+// toward Vmin_ground so the aircraft may bleed airspeed to (or below) stall for a
+// slow touchdown. h enters the augmented system at relative degree 4 -- one slower
+// than V's degree 3 -- so the barrier stays degree 3 and the control row is
+// UNCHANGED; only the drift (rhs) is reshaped by the schedule. Set Vmin_ground =
+// Vmin_air (and any hs) for the original constant-floor barrier.
+struct AirspeedBarrier {  // b = V - Vmin(h)
+  double Vmin_air{0};     // stall-margin floor aloft [m/s]
+  double Vmin_ground{0};  // relaxed floor at the surface [m/s] (<= Vmin_air)
+  double h_sched{1.0};    // schedule scale height [m]
+  AirspeedBarrier() = default;
+  // Single-arg form keeps the original CONSTANT floor (Vmin everywhere).
+  explicit AirspeedBarrier(double Vmin)
+      : Vmin_air(Vmin), Vmin_ground(Vmin), h_sched(1.0) {}
+  AirspeedBarrier(double v_air, double v_ground, double hs)
+      : Vmin_air(v_air), Vmin_ground(v_ground), h_sched(hs) {}
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
-    return X[LV] - Vmin;
+    return X[LV] - schedVlim<T>(X[LH], Vmin_air, Vmin_ground, h_sched);
   }
 };
 
-// Upper airspeed barrier b = V_max - V >= 0 (over-speed / high-energy water-
-// impact / structural-limit protection). Same relative degree (3) and control-
-// affine structure as the lower airspeed barrier -- signs flip -- so it reuses
-// the existing machinery (barrierLie<3> -> hocbfRow). Wired into LonCBFFilter via
-// the airspeed_upper flag + Vmax_air in LonCBFConfig (mirrors the lower barrier).
-struct AirspeedUpperBarrier {  // b = V_max - V
-  double Vmax{0};
+// Upper airspeed barrier b = Vmax(h) - V >= 0 (over-speed / high-energy water-
+// impact / structural-limit protection), with the same ALTITUDE-SCHEDULED ceiling:
+// the over-speed limit Vmax_air aloft tightens toward Vmax_ground near the surface,
+// commanding the aircraft to decelerate so it touches down at a lower horizontal
+// speed. Same relative degree (3) and control-affine structure as the lower barrier
+// -- signs flip -- so it reuses the machinery (barrierLie<3> -> hocbfRow). Set
+// Vmax_ground = Vmax_air for the original constant ceiling.
+struct AirspeedUpperBarrier {  // b = Vmax(h) - V
+  double Vmax_air{0};     // over-speed ceiling aloft [m/s]
+  double Vmax_ground{0};  // tightened ceiling at the surface [m/s] (<= Vmax_air)
+  double h_sched{1.0};    // schedule scale height [m]
+  AirspeedUpperBarrier() = default;
+  // Single-arg form keeps the original CONSTANT ceiling (Vmax everywhere).
+  explicit AirspeedUpperBarrier(double Vmax)
+      : Vmax_air(Vmax), Vmax_ground(Vmax), h_sched(1.0) {}
+  AirspeedUpperBarrier(double v_air, double v_ground, double hs)
+      : Vmax_air(v_air), Vmax_ground(v_ground), h_sched(hs) {}
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
-    return Vmax - X[LV];
+    return schedVlim<T>(X[LH], Vmax_air, Vmax_ground, h_sched) - X[LV];
   }
 };
 

@@ -48,6 +48,17 @@ Optional per item: `(owner)` and a one-line note.
       which is elevator-only and must flare at the lowest-q point of the flight — its soft slack
       would silently *absorb* an authority shortfall rather than enforce the load limit. Thrust
       (the actuator that could add flare energy) is excluded by the degree-2 construction.
+- [ ] **Descent-barrier infeasibility handoff (`a_brk ≤ 0`).** When the braking accel goes
+      non-positive (low airspeed near the surface), the soft-landing envelope has *no* real
+      braking solution — the barrier can't deliver a guarantee it physically lacks. The
+      2026-06-29 fix keeps `b` finite (smooth radicand floor) and now *annunciates* the
+      condition (`lastDescentInfeasible()`, the sim's `desc_infeasible` column + faults line)
+      instead of silently NaN-dropping the row, but the terminal behavior is still "flare as
+      hard as possible." Add a real **controllability/handoff response**: declare "cannot
+      guarantee" and hold/abort/transition rather than emit a control as if it could. Distinct
+      from (but related to) the elevator-authority guard above — that's `L_gL_f^{r-1}b → 0`
+      (infinite-elevator-still-zero-authority); this is *zero braking authority regardless of
+      elevator*.
 
 ## Modeling / data
 

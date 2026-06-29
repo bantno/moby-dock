@@ -39,10 +39,20 @@ struct LonCBFConfig {
                           // is kept only for logging / plot-script compatibility.
   double CLmax{1.2};      // max lift coeff (stall ceiling) for a_brk(V,gamma).
                           // PLACEHOLDER -- calibrate to the real airframe.
-  double Vmin{15.0};      // stall-margin airspeed [m/s]
+  double Vmin{15.0};      // stall-margin airspeed [m/s] (floor ALOFT)
   double Vmax_air{30.0};  // never-exceed airspeed [m/s] for the upper airspeed
-                          // barrier (over-speed / high-energy impact). NOTE: this
-                          // is airspeed -- distinct from Tmax (thrust). PLACEHOLDER.
+                          // barrier (ceiling ALOFT; over-speed / high-energy
+                          // impact). NOTE: this is airspeed -- distinct from Tmax
+                          // (thrust). PLACEHOLDER.
+  // Altitude-scheduled airspeed limits: aloft the (Vmin, Vmax_air) limits apply;
+  // near the surface they ramp to (Vmin_ground, Vmax_ground) over scale height
+  // v_sched_h -- Vlim(h)=V_g+(V_a-V_g)(1-exp(-h/h_s)). Lowering the floor lets the
+  // aircraft bleed to (or below) stall just before touchdown; tightening the
+  // ceiling commands it to slow for a lower-energy water contact. Defaults equal
+  // the aloft limits => constant (original) barriers.
+  double Vmin_ground{15.0};   // relaxed stall floor at the surface [m/s]
+  double Vmax_ground{30.0};   // tightened over-speed ceiling at the surface [m/s]
+  double v_sched_h{5.0};      // airspeed-schedule scale height [m]
   double Tmax{12.0};      // max thrust [N]
 
   std::array<double, 3> c_descent{2.0, 2.0, 2.0};   // class-K gains (deg 3)
@@ -63,13 +73,22 @@ struct LonCBFConfig {
   double tau_keel{0.0};       // keel incidence: tau = theta - tau_keel [rad]
   double z_gate{10.0};        // assemble the impact row only below this height [m]
   double eps_g0{0.02};        // smooth floor on sin(gamma0) (planing-singularity guard)
-  double impact_slack_lo{1.0e2};  // Option C height-scheduled slack penalty (high z)
-  double impact_slack_hi{1.0e4};  //   "   (z -> 0): cheap to relax high, firm near water
   std::array<double, 2> c_impact{2.0, 2.0};  // class-K gains (deg 2)
 
-  double w_de{1.0};        // QP weight on elevator deviation
-  double w_Tddot{1.0};     // QP weight on Tddot deviation
-  double slack_penalty{1.0e4};
+  // --- QP objective ----------------------------------------------------------
+  // J = 1/2 ||u - u_nom||^2  +  sum_i 1/2 w_slack_i * delta_i^2
+  // The control term is UNWEIGHTED (identity) -- it only regularizes u toward the
+  // nominal. Each SOFT barrier i carries a free slack delta_i >= 0 (constraint
+  // a_i.u - delta_i <= rhs_i) penalized QUADRATICALLY by w_slack_i: larger w =>
+  // firmer constraint. (Quadratic, not linear w_i*delta_i: a pure-linear penalty
+  // leaves P singular on the slacks and OSQP then fails to converge on many
+  // feasible steps -- firing best-effort spuriously.) HARD barriers (the *_hard
+  // flags, and the thrust-limit rows) get NO slack variable; if the hard set is
+  // infeasible the filter falls back to a best-effort minimum-violation solve.
+  double w_slack_descent{1.0e4};
+  double w_slack_airspeed{1.0e4};
+  double w_slack_airspeed_upper{1.0e4};
+  double w_slack_impact{1.0e4};
 
   double de_min{-0.5}, de_max{0.5};            // elevator bounds [rad]
   double Tddot_min{-500.0}, Tddot_max{500.0};  // Tddot bounds [N/s^2]
@@ -87,6 +106,11 @@ struct LonCBFConfig {
   // at the cost of ~tau lag. 0 => no filtering / pass-through (default). Cutoff
   // f_c = 1/(2*pi*tau); e.g. tau=0.2 s ~ 0.8 Hz.
   double h_lpf_tau{0.0};
+
+  // RNG seed for the altitude-measurement noise. Exposed so a Monte-Carlo sweep
+  // can evaluate a gain choice across many independent noise realizations rather
+  // than a single fixed draw. Fixed by default for run-to-run reproducibility.
+  unsigned int h_meas_seed{0xA17B0A11u};
 };
 
 class LonCBFFilter {
