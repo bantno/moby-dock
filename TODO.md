@@ -43,8 +43,11 @@ Optional per item: `(owner)` and a one-line note.
       the true keel height. With a real estimator, overestimating `z` is the dangerous
       direction — consume a lower-bound `z`, desensitize `Φ'` with a larger `zs` + light
       smoothing, and convert any rangefinder beam range to vertical height via attitude.
-- [ ] **Controllability guard** on `L_g L_f²b` (elevator authority → 0 at very low dynamic
-      pressure would make the descent barrier unenforceable by elevator).
+- [ ] **Controllability guard** on the elevator authority `L_g L_f^{r-1} b` (→ 0 at very low
+      dynamic pressure). Affects the descent barrier and **especially the impact-load barrier**,
+      which is elevator-only and must flare at the lowest-q point of the flight — its soft slack
+      would silently *absorb* an authority shortfall rather than enforce the load limit. Thrust
+      (the actuator that could add flare energy) is excluded by the degree-2 construction.
 
 ## Modeling / data
 
@@ -72,6 +75,43 @@ Optional per item: `(owner)` and a one-line note.
 - [ ] **Confirm the mixing map** — OpenVSP control-group definitions vs the default
       (Elevator←δe, Ailerons←δa, Rudder←δr), or set `mixing.matrix`.
 - [ ] **c.g. offset** vs the `.stab` moment reference (default 0) — confirm if it differs.
+
+## Validation / realism gaps
+
+Soft spots in the current impact-load barrier worth being honest about — most are
+"optimistic in the dangerous direction" and none have been exercised in the regime the
+barrier exists for.
+
+- [ ] **Exercise the impact barrier off-nominal — it is currently unverified.** On the nominal
+      approach `n_peak` peaks ~0.17 g vs the 3 g limit, and the sink-rate barrier flares to a
+      ~0.014 m/s touchdown, so the impact row never takes command (slack ≡ 0) — even when forced
+      *hard* with `n_limit=0.05 g` the trajectory was unchanged. Run a sweep where the kinematic
+      flare *can't* save it (steeper γ, higher `V_app`, gust/shear injection, degraded/disabled
+      descent barrier) and confirm the impact row actually becomes the active constraint and
+      holds `n_peak ≤ n_limit`. Until then "it works" is indistinguishable from "it's off."
+- [ ] **Validity gate leaves the worst case unprotected.** The row is assembled only while
+      descending with positive trim (NACA TN 1516's valid domain), so a nose-down / high-sink
+      botched approach — plausibly the highest-load case — gets *no* protection. The hard on/off
+      of the gate is also a discontinuity (1 QP feasibility-recovery seen in the hard binding
+      test). Consider a smooth fallback / out-of-envelope load guard.
+- [ ] **Idealized estimation & actuators.** Sim uses perfect θ/γ/V/z and no actuator lag; the
+      barrier is the most sensitive part (Lie-derivative gains are large — elevator coeff ~3e4 —
+      so it amplifies state noise, and the flare assumes an instantaneous elevator). Add sensor
+      noise + a servo-lag model and re-check. (Altitude specifically: see the Φ(z) estimation
+      item under CBF/theory.)
+- [ ] **Smooth-water assumption (no wave model).** `τ`/`γ₀` are referenced to flat water; in a
+      seaway the trim/path *relative to the local wave slope* dominate the slam load (a contact
+      on a wave face spikes κ). Reference the contact state to the wave surface. Probably the
+      biggest single physical unrealism for real ops.
+- [ ] **Lift = weight during contact (inherited TN 1516 assumption).** At the decelerating,
+      low-speed touchdown the wing may carry < weight, dumping more onto the hull → true load
+      *higher* than predicted (non-conservative). Check/bound this.
+- [ ] **CG load factor ≠ local hull pressure.** `n_peak` is the rigid-body CG load normal to the
+      water, not the local panel pressure that usually drives structural failure. A separate
+      local-pressure check should exist (spec §7); `n_limit` alone can't stand in for it.
+      *(Calibration of `n_limit` is tracked under Modeling/data.)*
+- [ ] **Longitudinal / symmetric only.** No lateral DOF — a wing-down or crabbed touchdown slams
+      one chine first and produces the worst *local* loads, entirely outside this barrier.
 
 ## Infra / build
 
