@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <vector>
 
 namespace autoland {
@@ -10,6 +9,16 @@ namespace {
 
 constexpr double kInf = 1.0e30;  // OSQP +/-inf sentinel
 constexpr double kCap = 1.0e20;  // finite cap kept strictly below kInf
+
+// Best-effort fallback weight. When the hard-constrained QP is infeasible we do
+// NOT relax the hard rows to regain feasibility -- that would simply delete the
+// constraint's effect. Instead we solve a minimum-violation QP whose hard-row
+// slack (= the constraint violation) is penalized far above the soft rows and
+// the nominal-tracking term, so the optimizer spends all available actuator
+// authority driving the hard-barrier violation toward zero. The result is the
+// best control we can apply to push the state back toward the safe set, even
+// though no control fully satisfies the (infeasible) hard constraints.
+constexpr double kBestEffortHardPenalty = 1.0e6;
 
 double clampd(double v, double lo, double hi) { return std::max(lo, std::min(hi, v)); }
 
@@ -28,6 +37,9 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
                                 const AeroTable& table, const Mixing& mixing,
                                 const AircraftConfig& cfg) const {
   recovered_ = false;
+  dropped_rows_ = 0;
+  hard_dropped_ = false;
+  descent_infeasible_ = false;
   if (!cfg_.enabled) return U_nom;
 
   const double V = X[LV];
@@ -49,22 +61,17 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
 
   if (cfg_.descent) {
     const DescentBarrier b = makeDescentBarrier(aero, cfg_.v_safe, cfg_.CLmax, V);
-    // a_brk(V,gamma) must stay positive for the soft-landing envelope to be
-    // well-posed; it is, as long as V stays above ~stall (the airspeed barrier).
-    // Warn once if it ever goes non-positive (the descent row then turns
-    // non-finite and is dropped below -- a silent loss of the guarantee).
+    // a_brk(V,gamma) is the available vertical braking acceleration. When it goes
+    // non-positive (V at/below ~stall -- the airspeed barrier's regime) the
+    // soft-landing envelope has no real braking solution. The barrier's smooth
+    // radicand floor (DescentBarrier::eps_r) keeps b finite so the row stays in
+    // the QP, but the guarantee is no longer physically achievable -- flag it as
+    // a per-call signal (counted/surfaced by the sim) instead of a once-only warn.
     const double abrk = (0.5 * b.rho * b.Sref / b.mass) * V * V *
                             (b.CLmax * std::cos(X[LGAM]) -
                              b.CDmaxlift * std::sin(X[LGAM])) -
                         b.g;
-    if (abrk <= 0.0) {
-      static bool warned = false;
-      if (!warned) {
-        std::cerr << "[lon_cbf] warning: a_brk(V,gamma) <= 0 at V=" << V
-                  << " m/s -- descent barrier may be ill-posed\n";
-        warned = true;
-      }
-    }
+    descent_infeasible_ = (abrk <= 0.0);
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_descent.begin(), cfg_.c_descent.end());
@@ -111,28 +118,50 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     pushHocbf(thrustMaxRow(X, cfg_.Tmax, cfg_.c_thrust_max[0], cfg_.c_thrust_max[1]), true);
   }
 
+  // Row-assembly health: any barrier whose Lie row came out non-finite is dropped
+  // from the QP below (coefficients zeroed, rhs -> +inf). A dropped HARD row is a
+  // lost guarantee, so record it for the caller rather than failing silently.
+  for (const QRow& r : rows)
+    if (!r.finite) { ++dropped_rows_; if (r.hard) hard_dropped_ = true; }
+
   const int nb = static_cast<int>(rows.size());
   if (nb == 0) return U_nom;
 
-  // ---- Assemble + solve the QP, optionally forcing every row soft ----------
-  //   z = [de, Tddot, slack(one per SOFT row)]
-  auto solveWith = [&](bool force_soft) -> QPResult {
+  // ---- Assemble + solve the QP --------------------------------------------
+  //   z = [de, Tddot, slack(one per slacked row)]
+  // best_effort=false (primary): hard rows are HARD (no slack), soft rows carry
+  //   penalized slack, and the objective tracks U_nom. Used whenever feasible, so
+  //   the hard barriers are satisfied exactly with minimal deviation from nominal.
+  // best_effort=true (infeasibility fallback): every row gets a slack so the QP
+  //   is always solvable, but each HARD row's slack (its constraint violation) is
+  //   penalized at kBestEffortHardPenalty -- far above the soft rows and tracking
+  //   -- so the solution is the actuator-box-limited control that MINIMIZES the
+  //   hard-barrier violation. We never soften a hard constraint to dodge it; we
+  //   apply the most-safety-driving control the actuators allow.
+  auto solveWith = [&](bool best_effort) -> QPResult {
     std::vector<int> slack_col(nb, -1);
     int nslack = 0;
     for (int i = 0; i < nb; ++i)
-      if (force_soft || !rows[i].hard) slack_col[i] = NUA + nslack++;
+      if (best_effort || !rows[i].hard) slack_col[i] = NUA + nslack++;
 
     const int n = NUA + nslack;
     const int m = nb + NUA + nslack;  // barrier rows + control box + slack >= 0
 
     Mat P = Mat::Zero(n, n);
     Vec q = Vec::Zero(n);
+    // Nominal tracking. In the best-effort solve this stays at its normal weight
+    // but is dominated by the hard-violation penalty below, so it only breaks
+    // ties among equally-safe controls (it never trades away safety).
     P(LDE, LDE) = cfg_.w_de;
     P(LTDDOT, LTDDOT) = cfg_.w_Tddot;
     q[LDE] = -cfg_.w_de * U_nom[LDE];
     q[LTDDOT] = -cfg_.w_Tddot * U_nom[LTDDOT];
     for (int i = 0; i < nb; ++i)
-      if (slack_col[i] >= 0) P(slack_col[i], slack_col[i]) = rows[i].slack_penalty;
+      if (slack_col[i] >= 0) {
+        const double pen = (best_effort && rows[i].hard) ? kBestEffortHardPenalty
+                                                         : rows[i].slack_penalty;
+        P(slack_col[i], slack_col[i]) = pen;
+      }
 
     Mat A = Mat::Zero(m, n);
     Vec lo = Vec::Zero(m);
@@ -162,12 +191,18 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
   bool any_hard = false;
   for (const QRow& r : rows) any_hard = any_hard || r.hard;
 
-  QPResult res = solveWith(/*force_soft=*/false);
+  // Primary: enforce the hard rows exactly. If that is infeasible, switch to the
+  // best-effort (minimum hard-violation) control -- NOT a softened relaxation.
+  // Relaxing the hard rows would delete their influence; best-effort still spends
+  // the actuators driving the state toward the safe set as hard as possible.
+  QPResult res = solveWith(/*best_effort=*/false);
   if (!res.success && any_hard) {
     recovered_ = true;
-    res = solveWith(/*force_soft=*/true);
+    res = solveWith(/*best_effort=*/true);
   }
 
+  // Last resort: if even the best-effort QP fails to solve (solver error -- it is
+  // structurally feasible, so this is numerical), apply the box-clamped nominal.
   LonCtrlVec u_out = U_nom;
   if (res.success) {
     u_out[LDE] = clampd(res.z[LDE], cfg_.de_min, cfg_.de_max);

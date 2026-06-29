@@ -73,6 +73,20 @@ struct LonCBFConfig {
 
   double de_min{-0.5}, de_max{0.5};            // elevator bounds [rad]
   double Tddot_min{-500.0}, Tddot_max{500.0};  // Tddot bounds [N/s^2]
+
+  // Altitude-measurement noise standard deviation [m]. The sim feeds the filter
+  // a noisy AGL measurement h_meas = h + N(0, h_meas_stddev^2); the QP math is
+  // unchanged and the plant still integrates the TRUE h (the noise is a sensor
+  // model applied in LonSim::run, not in the barrier math). 0 => perfect
+  // altitude (default). Tunable; ~1 m models a noisy AGL/radar-altimeter sensor.
+  double h_meas_stddev{0.0};
+
+  // First-order low-pass time constant [s] on the altitude measurement, applied
+  // before the CBF sees it (h_filt += alpha*(h_meas - h_filt), alpha=dt/(tau+dt)).
+  // Attenuates the sensor noise that drives near-surface barrier/elevator chatter,
+  // at the cost of ~tau lag. 0 => no filtering / pass-through (default). Cutoff
+  // f_c = 1/(2*pi*tau); e.g. tau=0.2 s ~ 0.8 Hz.
+  double h_lpf_tau{0.0};
 };
 
 class LonCBFFilter {
@@ -91,12 +105,25 @@ class LonCBFFilter {
 
   bool enabled() const { return cfg_.enabled; }
   bool lastRecovery() const { return recovered_; }
+  // Per-call row-assembly health, set by the most recent filter() call.
+  //   lastDroppedRows()      : barrier rows that came out non-finite and were
+  //                            dropped from the QP (coeffs zeroed, rhs -> +inf).
+  //   lastHardDropped()      : at least one dropped row was a HARD constraint --
+  //                            an unannunciated loss of a safety guarantee.
+  //   lastDescentInfeasible(): a_brk(V,gamma) <= 0 -- the soft-landing envelope
+  //                            had no real braking solution (root-cause signal).
+  int lastDroppedRows() const { return dropped_rows_; }
+  bool lastHardDropped() const { return hard_dropped_; }
+  bool lastDescentInfeasible() const { return descent_infeasible_; }
   const LonCBFConfig& config() const { return cfg_; }
 
  private:
   LonCBFConfig cfg_;
   std::unique_ptr<QPSolver> solver_;
   mutable bool recovered_{false};
+  mutable int dropped_rows_{0};
+  mutable bool hard_dropped_{false};
+  mutable bool descent_infeasible_{false};
 };
 
 }  // namespace autoland

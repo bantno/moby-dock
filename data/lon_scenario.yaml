@@ -12,7 +12,7 @@
 # =============================================================================
 
 V_app: 18.0           # approach airspeed [m/s]
-gamma_app_deg: -3.0   # nominal flight-path angle [deg] (negative = descent)
+gamma_app_deg: -10.0   # nominal flight-path angle [deg] (negative = descent)
 
 dt:    0.01
 t_max: 200.0
@@ -66,7 +66,7 @@ cbf:
   # speed. 27 (~1.5 V_app) is generous: protective but non-binding on this
   # nominal approach (which flies ~18 m/s and only slows), so the trajectory is
   # unchanged; lower it to see the upper airspeed barrier actively cap V.
-  V_max:  27.0
+  V_max:  25.0
   Tmax:   50.0         # max thrust [N] (T_static)
 
   # --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) ---
@@ -104,3 +104,13 @@ cbf:
   de_max_deg:  28.6
   Tddot_min: -500.0
   Tddot_max:  500.0
+
+  # Altitude-sensor noise [m]: the CBF acts on a noisy measurement h + N(0,sigma^2),
+  # while the plant integrates the true altitude. 0 => perfect altitude. 1.0 models
+  # a noisy AGL sensor (+-1 m, 1-sigma).
+  h_meas_stddev: 0.5
+  # First-order low-pass time constant [s] on that measurement before the CBF sees
+  # it. Attenuates the noise that drives near-surface elevator chatter, at the cost
+  # of ~tau lag. 0 => no filtering. tau=0.15 s ~ 1.1 Hz cutoff (best single-seed
+  # touchdown here; tune via Monte Carlo over seeds, the response is seed-sensitive).
+  h_lpf_tau: 0.15

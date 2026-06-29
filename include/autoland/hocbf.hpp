@@ -35,6 +35,17 @@ struct DescentBarrier {
   double v_safe2{0};
   double rho{0}, Sref{0}, mass{0}, g{0};  // environment / geometry
   double CLmax{0}, CDmaxlift{0};          // stall ceiling + its drag coefficient
+  // Numerical regularizer [m^2/s^2] on the kinematic radicand -- NOT a tuning
+  // knob. When the braking envelope momentarily has no real solution
+  // (v_safe2 + 2*a_brk*h < 0 -- e.g. the touchdown sample where h dips below 0,
+  // or a_brk <= 0 at low airspeed) the raw radicand goes negative and sqrt()
+  // returns NaN. The filter's finiteness guard would then SILENTLY DROP this row
+  // -- deleting the only hard sink-rate guarantee with no trace, and the NaN is
+  // masked in the psi diagnostics (std::min ignores NaN). The smooth positive
+  // floor below keeps b finite and C-infinity, so the exact-Lie Taylor jet and
+  // the QP row stay well-posed and the barrier degrades gracefully (it stays in
+  // the QP and drives the strongest available flare) instead of vanishing.
+  double eps_r{0.01};
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
     using std::cos;
@@ -43,7 +54,12 @@ struct DescentBarrier {
     const T V = X[LV], gam = X[LGAM];
     const T a_brk = (0.5 * rho * Sref / mass) * (V * V) *
                         (CLmax * cos(gam) - CDmaxlift * sin(gam)) - g;
-    return V * sin(gam) + sqrt(v_safe2 + (2.0 * a_brk) * X[LH]);
+    const T arg = v_safe2 + (2.0 * a_brk) * X[LH];
+    // arg_pos = 0.5(arg + sqrt(arg^2 + 4 eps_r^2)) > 0 for all arg; -> arg for
+    // arg >> eps_r, -> 0+ for arg << -eps_r. eps_r is small enough that the
+    // normal-flight bias (~eps_r^2/arg, arg ~ 1e2..1e3) is negligible.
+    const T arg_pos = 0.5 * (arg + sqrt(arg * arg + (4.0 * eps_r * eps_r)));
+    return V * sin(gam) + sqrt(arg_pos);
   }
 };
 
