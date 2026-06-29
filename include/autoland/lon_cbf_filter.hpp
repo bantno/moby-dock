@@ -4,6 +4,7 @@
 #include "autoland/aero_table.hpp"
 #include "autoland/config.hpp"
 #include "autoland/hocbf.hpp"
+#include "autoland/impact_barrier.hpp"
 #include "autoland/lon_augmented.hpp"
 #include "autoland/mixing.hpp"
 #include "autoland/qp_solver.hpp"
@@ -26,9 +27,11 @@ struct LonCBFConfig {
   bool airspeed{true};
   bool airspeed_upper{true};
   bool thrust_limits{true};
+  bool impact{true};
   bool descent_hard{true};
   bool airspeed_hard{false};
   bool airspeed_upper_hard{false};
+  bool impact_hard{false};
 
   double v_safe{0.6};     // hull-safe touchdown sink rate [m/s]
   double a_brk{3.0};      // [DEPRECATED] constant braking accel. The descent
@@ -47,6 +50,22 @@ struct LonCBFConfig {
   std::array<double, 3> c_airspeed_upper{2.0, 2.0, 2.0};
   std::array<double, 2> c_thrust_min{4.0, 4.0};     // {c11, c12} (deg 2)
   std::array<double, 2> c_thrust_max{4.0, 4.0};     // {c21, c22}
+
+  // --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) --
+  // Bounds the peak CG load factor at water touchdown. n_limit/beta/Nb/zs are
+  // PLACEHOLDERS to calibrate -- see TODO.md. NOTE: n_limit (load factor) and
+  // beta/rho_water are HYDRODYNAMIC; do not confuse with the aero CLmax above.
+  double n_limit{3.0};        // structural CG load-factor limit [g] (normal to water)
+  double beta{22.5 * M_PI / 180.0};  // hull dead-rise [rad]
+  double rho_water{1000.0};   // water density [kg/m^3] (1000 fresh / 1025 sea)
+  double Nb{10.0};            // Phi(z) budget [g]: counterfactual excess load tolerated
+  double zs{2.0};             // Phi(z) altitude scale [m] (flare-authority height)
+  double tau_keel{0.0};       // keel incidence: tau = theta - tau_keel [rad]
+  double z_gate{10.0};        // assemble the impact row only below this height [m]
+  double eps_g0{0.02};        // smooth floor on sin(gamma0) (planing-singularity guard)
+  double impact_slack_lo{1.0e2};  // Option C height-scheduled slack penalty (high z)
+  double impact_slack_hi{1.0e4};  //   "   (z -> 0): cheap to relax high, firm near water
+  std::array<double, 2> c_impact{2.0, 2.0};  // class-K gains (deg 2)
 
   double w_de{1.0};        // QP weight on elevator deviation
   double w_Tddot{1.0};     // QP weight on Tddot deviation

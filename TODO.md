@@ -17,8 +17,15 @@ Optional per item: `(owner)` and a one-line note.
 - [ ] **Thrust term in `a_brk`.** Add the thrust contribution to the braking acceleration. Needs
       the mixed-relative-degree treatment — putting the thrust state `T`/pitch `θ` into the
       descent barrier drops it below degree 3 — so it couples with the §3.3 work below.
-- [ ] **§3.3 contact-force barrier.** Attitude-coupled `v_safe(θ)` from von Kármán/Wagner
-      slamming theory (mixed degree: 2 for elevator, 3 for thrust). Highest research value.
+- [x] **§3.3 contact-force barrier (partial).** Attitude-coupled contact-load constraint
+      now exists: the hydrodynamic **impact-load barrier** (NACA TN 1516) bounds the peak CG
+      load factor at touchdown, built as a **degree-2 HOCBF enforced by the elevator/flare**
+      (`impact_barrier.hpp`). A single affine QP row can't mix the elevator's degree 2 with
+      thrust's degree 3 (it yields non-affine u²/u̇ terms), so thrust is left to bound impact
+      via the sink-rate barrier. *Still open:* (a) a **full mixed-degree (2/3)** construction
+      so thrust jointly enforces the impact barrier; (b) a **predictive / backup-set CBF**
+      (forward-integrate the planned flare; spec §5.1) that would use both controls and drop
+      the height term. Highest remaining research value.
 - [ ] **Independent control-row oracle.** The finite-difference oracle covers the drift stack
       `L_f^k b`; add an independent check of the control row `L_g L_f^{r-1} b`.
 - [x] **Upper airspeed barrier** `b = V_max − V` (over-speed / high-energy impact). Wired into
@@ -27,6 +34,15 @@ Optional per item: `(owner)` and a one-line note.
       Modeling/data). Like the lower barrier it is currently **soft** (see "Harden the airspeed
       barrier" below — applies to both).
 - [ ] **Harden the airspeed barrier** — currently soft (slack-penalized), not a hard guarantee.
+- [ ] **Tune the impact-load barrier.** `Nb` (Φ budget) from the worst nominal-descent
+      excess load, `zs` (Φ altitude scale) so `Φ'(0)=Nb/zs` is matched by the flare
+      authority, the `c_impact` class-K gains against the flare timescale, and the Option C
+      slack schedule (`impact_slack_lo/hi`). Currently placeholders (`Nb=10`, `zs=2`,
+      `c_impact=[2,2]`) — soft + non-binding on the nominal approach.
+- [ ] **Impact-barrier altitude estimation (deferred, spec §5.4).** `Φ(z)` currently uses
+      the true keel height. With a real estimator, overestimating `z` is the dangerous
+      direction — consume a lower-bound `z`, desensitize `Φ'` with a larger `zs` + light
+      smoothing, and convert any rangefinder beam range to vertical height via attitude.
 - [ ] **Controllability guard** on `L_g L_f²b` (elevator authority → 0 at very low dynamic
       pressure would make the descent barrier unenforceable by elevator).
 
@@ -43,6 +59,12 @@ Optional per item: `(owner)` and a one-line note.
 - [ ] **Calibrate `V_max`** (over-speed barrier ceiling). Currently a placeholder `27` m/s
       (~1.5·V_app) in `lon_scenario.yaml`. Set to the real never-exceed / structural / hull-slam
       speed limit.
+- [ ] **Calibrate the impact-load barrier hull/limit params.** `n_limit` (3 g placeholder)
+      from the structural allowable *with knockdowns* (it's a CG load factor normal to the
+      water, not local hull pressure — keep that check separate). Confirm hull dead-rise
+      `beta` (22.5° placeholder), `tau_keel` (keel incidence, 0), and `rho_water`
+      (1000 fresh / 1025 sea). Absolute load level is dominated by dead rise and contact
+      sink rate, so placeholders can be off by large factors.
 - [ ] **Remove the old `example.stab` placeholder aero deck.** Migrate the unit tests
       (`test/*` use `example.stab` via `Setup`) and the body-axis `autoland_sim` default onto
       `AHAB_combined.stab` first, then delete `example.stab`.

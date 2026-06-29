@@ -43,9 +43,11 @@ cbf:
   airspeed:       true
   airspeed_upper: true
   thrust_limits:  true
+  impact:         true   # hydrodynamic impact-load barrier (NACA TN 1516)
   descent_hard:   true
   airspeed_hard:  false
   airspeed_upper_hard: false
+  impact_hard:    false  # soft by default (Option C height-scheduled slack)
 
   v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
   a_brk:  3.0         # [DEPRECATED] constant braking accel; a_brk is now
@@ -67,6 +69,24 @@ cbf:
   V_max:  27.0
   Tmax:   50.0         # max thrust [N] (T_static)
 
+  # --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) ---
+  # Bounds the peak CG load factor at water touchdown: b = (n_limit - n_peak) +
+  # Phi(z), Phi = Nb(1 - exp(-z/zs)). Soft + enabled by default and sized to be
+  # protective but NON-BINDING on this nominal approach (additive safety, no
+  # trajectory change) -- like the upper airspeed barrier. n_limit / beta_deg /
+  # Nb / zs are PLACEHOLDERS to calibrate (see TODO.md). NOTE: n_limit is a LOAD
+  # FACTOR and beta/rho_water are HYDRODYNAMIC -- unrelated to the aero CL_max.
+  n_limit:  3.0        # structural CG load-factor limit [g] (normal to water, w/ knockdowns)
+  beta_deg: 22.5       # hull dead-rise angle [deg] (NACA TN 1516 validated 22.5-40)
+  rho_water: 1000.0    # water density [kg/m^3] (1000 fresh / 1025 sea)
+  Nb:       10.0       # Phi(z) budget [g]: worst counterfactual excess load tolerated aloft
+  zs:       2.0        # Phi(z) altitude scale [m]: height over which flare authority acts
+  tau_keel_deg: 0.0    # keel incidence (tau = theta - tau_keel) [deg]
+  z_gate:   10.0       # assemble the impact row only below this height [m] (efficiency)
+  eps_g0:   0.02       # smooth floor on sin(gamma0): caps the planing singularity gamma0->0
+  impact_slack_lo: 1.0e2   # Option C slack penalty aloft (cheap to relax)
+  impact_slack_hi: 1.0e4   # Option C slack penalty near the surface (firmly enforced)
+
   # Class-K gains (linear alpha_i(s) = c_i s). Descent/airspeed are degree 3.
   c_descent:    [2.0, 2.0, 2.0]   # cd2-style envelope; deepest flare this airframe
                                   # achieves at a_brk=3 (touchdown sink ~0.32 m/s)
@@ -74,6 +94,7 @@ cbf:
   c_airspeed_upper: [2.0, 2.0, 2.0]
   c_thrust_min: [6.0, 6.0]
   c_thrust_max: [6.0, 6.0]
+  c_impact:     [2.0, 2.0]         # impact-load barrier class-K gains (degree 2)
 
   w_de:    1.0
   w_Tddot: 0.01       # cheap thrust-jerk so the QP prefers throttle over elevator

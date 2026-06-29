@@ -19,6 +19,7 @@ struct QRow {
   double rhs{0};
   bool hard{true};
   bool finite{true};
+  double slack_penalty{0};  // per-row penalty (default = cfg_.slack_penalty)
 };
 
 }  // namespace
@@ -42,6 +43,7 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     r.hard = hard;
     r.finite = std::isfinite(h.rhs) && std::isfinite(h.a(0, LDE)) &&
                std::isfinite(h.a(0, LTDDOT));
+    r.slack_penalty = cfg_.slack_penalty;
     rows.push_back(r);
   };
 
@@ -82,6 +84,28 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     const std::vector<double> c(cfg_.c_airspeed_upper.begin(), cfg_.c_airspeed_upper.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard);
   }
+  // Hydrodynamic impact-load barrier (degree-2 HOCBF; elevator-enforced). Gated
+  // on (a) height for efficiency -- inactive above z_gate where Phi(z) ~ Nb -- and
+  // (b) model validity: NACA TN 1516 assumes a descending, positive-trim contact
+  // (gamma0 > 0, tau > 0). Outside that the prediction (kappa < 0, n_peak < 0) is
+  // meaningless, so the row is skipped rather than fed to the QP as a pathological
+  // (huge-coefficient) constraint. In a normal landing tau/gamma0 stay positive
+  // through the flare, so this coincides with the active window.
+  const double tau_gate = X[LTH] - cfg_.tau_keel;
+  if (cfg_.impact && X[LH] < cfg_.z_gate && -X[LGAM] > 0.0 && tau_gate > 0.0) {
+    const ImpactLoadBarrier b =
+        makeImpactLoadBarrier(aero, cfg_.n_limit, cfg_.beta, cfg_.rho_water,
+                              cfg_.Nb, cfg_.zs, cfg_.tau_keel, cfg_.eps_g0, X);
+    auto lie = barrierLie<2>(aero, b, X);  // relative degree 2 (elevator)
+    std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+    const std::vector<double> c(cfg_.c_impact.begin(), cfg_.c_impact.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.impact_hard);
+    // Option C: height-scheduled slack penalty (cheap to relax aloft, firm near
+    // the surface) on this row only.
+    rows.back().slack_penalty =
+        cfg_.impact_slack_lo + (cfg_.impact_slack_hi - cfg_.impact_slack_lo) *
+                                   std::exp(-X[LH] / cfg_.zs);
+  }
   if (cfg_.thrust_limits) {
     pushHocbf(thrustMinRow(X, cfg_.c_thrust_min[0], cfg_.c_thrust_min[1]), true);
     pushHocbf(thrustMaxRow(X, cfg_.Tmax, cfg_.c_thrust_max[0], cfg_.c_thrust_max[1]), true);
@@ -108,7 +132,7 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     q[LDE] = -cfg_.w_de * U_nom[LDE];
     q[LTDDOT] = -cfg_.w_Tddot * U_nom[LTDDOT];
     for (int i = 0; i < nb; ++i)
-      if (slack_col[i] >= 0) P(slack_col[i], slack_col[i]) = cfg_.slack_penalty;
+      if (slack_col[i] >= 0) P(slack_col[i], slack_col[i]) = rows[i].slack_penalty;
 
     Mat A = Mat::Zero(m, n);
     Vec lo = Vec::Zero(m);

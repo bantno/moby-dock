@@ -141,20 +141,34 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.airspeed = getOrB(yc, "airspeed", true);
   cb.airspeed_upper = getOrB(yc, "airspeed_upper", true);
   cb.thrust_limits = getOrB(yc, "thrust_limits", true);
+  cb.impact = getOrB(yc, "impact", true);
   cb.descent_hard = getOrB(yc, "descent_hard", true);
   cb.airspeed_hard = getOrB(yc, "airspeed_hard", false);
   cb.airspeed_upper_hard = getOrB(yc, "airspeed_upper_hard", false);
+  cb.impact_hard = getOrB(yc, "impact_hard", false);
   cb.v_safe = getOr(yc, "v_safe", 0.6);
   cb.a_brk = getOr(yc, "a_brk", 3.0);
   cb.CLmax = getOr(yc, "CL_max", 1.2);
   cb.Vmin = getOr(yc, "Vmin", 0.85 * V_app);
   cb.Vmax_air = getOr(yc, "V_max", 1.5 * V_app);
   cb.Tmax = getOr(yc, "Tmax", ac_.thrust.T_static);
+  // Impact-load barrier (NACA TN 1516). beta given in degrees in YAML.
+  cb.n_limit = getOr(yc, "n_limit", 3.0);
+  cb.beta = getOr(yc, "beta_deg", 22.5) * kDeg;
+  cb.rho_water = getOr(yc, "rho_water", 1000.0);
+  cb.Nb = getOr(yc, "Nb", 10.0);
+  cb.zs = getOr(yc, "zs", 2.0);
+  cb.tau_keel = getOr(yc, "tau_keel_deg", 0.0) * kDeg;
+  cb.z_gate = getOr(yc, "z_gate", 10.0);
+  cb.eps_g0 = getOr(yc, "eps_g0", 0.02);
+  cb.impact_slack_lo = getOr(yc, "impact_slack_lo", 1.0e2);
+  cb.impact_slack_hi = getOr(yc, "impact_slack_hi", 1.0e5);
   cb.c_descent = getArr3(yc, "c_descent", {2.0, 2.0, 2.0});
   cb.c_airspeed = getArr3(yc, "c_airspeed", {2.0, 2.0, 2.0});
   cb.c_airspeed_upper = getArr3(yc, "c_airspeed_upper", {2.0, 2.0, 2.0});
   cb.c_thrust_min = getArr2(yc, "c_thrust_min", {4.0, 4.0});
   cb.c_thrust_max = getArr2(yc, "c_thrust_max", {4.0, 4.0});
+  cb.c_impact = getArr2(yc, "c_impact", {2.0, 2.0});
   cb.w_de = getOr(yc, "w_de", 1.0);
   cb.w_Tddot = getOr(yc, "w_Tddot", 1.0);
   cb.slack_penalty = getOr(yc, "slack_penalty", 1.0e4);
@@ -200,7 +214,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
          "de_nom,Tddot_nom,b_descent,b_airspeed,b_airspeed_upper,theta_cmd_deg,recovered,"
          "psi1_desc,psi2_desc,psi1_air,psi2_air,psi1_airup,psi2_airup,"
-         "res_desc,res_air,res_airup,res_tmin,res_tmax\n";
+         "res_desc,res_air,res_airup,res_tmin,res_tmax,"
+         "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -210,6 +225,7 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   // forward-invariance condition is psi_i >= 0 for all i, not just b = psi_0).
   double min_psi1d = 1e30, min_psi2d = 1e30, min_psi1a = 1e30, min_psi2a = 1e30;
   double min_psi1au = 1e30, min_psi2au = 1e30;
+  double min_psi1i = 1e30, min_psi2i = 1e30;  // impact (over the active z<z_gate window)
 
   for (int k = 0; k <= nsteps; ++k) {
     const LonCtrlVec U_nom = nominal.step(X, dt);
@@ -245,6 +261,33 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     min_psi1au = std::min(min_psi1au, psi1au);
     min_psi2au = std::min(min_psi2au, psi2au);
 
+    // Impact-load barrier (degree 2). psi minima are tracked only over the active
+    // window (z < z_gate), where the row is actually assembled/enforced.
+    const ImpactLoadBarrier bimp =
+        makeImpactLoadBarrier(aero, sc_.cbf.n_limit, sc_.cbf.beta, sc_.cbf.rho_water,
+                              sc_.cbf.Nb, sc_.cbf.zs, sc_.cbf.tau_keel, sc_.cbf.eps_g0, X);
+    const auto lii = barrierLie<2>(aero, bimp, X);
+    const auto& ci = sc_.cbf.c_impact;
+    const double psi1i = lii.Lf[1] + ci[0] * lii.Lf[0];
+    const double psi2i = lii.Lf[2] + (ci[0] + ci[1]) * lii.Lf[1] + ci[0] * ci[1] * lii.Lf[0];
+    // Track minima only where the filter actually assembles the row (the active,
+    // model-valid window): below z_gate, descending, positive trim.
+    const bool impact_active = X[LH] < sc_.cbf.z_gate && -X[LGAM] > 0.0 &&
+                               (X[LTH] - sc_.cbf.tau_keel) > 0.0;
+    if (impact_active) {
+      min_psi1i = std::min(min_psi1i, psi1i);
+      min_psi2i = std::min(min_psi2i, psi2i);
+    }
+    // n_peak and kappa for the trace, recomputed from the frozen barrier.
+    const double gamma0_l = -X[LGAM];
+    const double tau_l = X[LTH] - sc_.cbf.tau_keel;
+    const double sg0_l = std::sqrt(std::sin(gamma0_l) * std::sin(gamma0_l) +
+                                   sc_.cbf.eps_g0 * sc_.cbf.eps_g0);
+    const double kappa_l = std::sin(tau_l) * std::cos(tau_l + gamma0_l) / sg0_l;
+    const double ydot0_l = -X[LV] * std::sin(X[LGAM]);
+    const double n_peak =
+        bimp.K0 * ydot0_l * ydot0_l * (bimp.Clf0 + bimp.dClf_dk * (kappa_l - bimp.kappa0));
+
     // Active-set diagnostics: constraint residual rhs - a.U for each barrier row
     // (residual ~ 0 => that barrier is binding/active and shaping the control).
     std::vector<double> Lfd(ldd.Lf.begin(), ldd.Lf.end());
@@ -255,11 +298,14 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const HocbfRow rau = hocbfRow(Lfau, lau.LgLf, {cau[0], cau[1], cau[2]});
     const HocbfRow rtl = thrustMinRow(X, sc_.cbf.c_thrust_min[0], sc_.cbf.c_thrust_min[1]);
     const HocbfRow rtu = thrustMaxRow(X, sc_.cbf.Tmax, sc_.cbf.c_thrust_max[0], sc_.cbf.c_thrust_max[1]);
+    std::vector<double> Lfi(lii.Lf.begin(), lii.Lf.end());
+    const HocbfRow ri = hocbfRow(Lfi, lii.LgLf, {ci[0], ci[1]});
     auto resid = [&](const HocbfRow& r) {
       return r.rhs - (r.a(0, LDE) * U[LDE] + r.a(0, LTDDOT) * U[LTDDOT]);
     };
     const double res_d = resid(rd), res_a = resid(ra), res_au = resid(rau);
     const double res_tl = resid(rtl), res_tu = resid(rtu);
+    const double res_i = resid(ri);
 
     csv << t << ',' << X[LH] << ',' << X[LV] << ',' << X[LGAM] / kDeg << ','
         << X[LTH] / kDeg << ',' << X[LQ] << ',' << X[LT] << ',' << X[LTDOT] << ','
@@ -269,7 +315,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         << (filter.lastRecovery() ? 1 : 0) << ',' << psi1d << ',' << psi2d << ','
         << psi1a << ',' << psi2a << ',' << psi1au << ',' << psi2au << ','
         << res_d << ',' << res_a << ',' << res_au << ',' << res_tl
-        << ',' << res_tu << '\n';
+        << ',' << res_tu << ',' << bimp(xa) << ',' << n_peak << ',' << kappa_l
+        << ',' << psi1i << ',' << psi2i << ',' << res_i << '\n';
 
     if (X[LH] <= 0.0 && k > 0) {
       td.reached = true;
@@ -297,6 +344,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   std::cout << "    descent : min psi1=" << min_psi1d << "  min psi2=" << min_psi2d << "\n";
   std::cout << "    airspeed: min psi1=" << min_psi1a << "  min psi2=" << min_psi2a << "\n";
   std::cout << "    air-upr : min psi1=" << min_psi1au << "  min psi2=" << min_psi2au << "\n";
+  std::cout << "    impact  : min psi1=" << min_psi1i << "  min psi2=" << min_psi2i
+            << "  (z < z_gate=" << sc_.cbf.z_gate << " m)\n";
   std::cout << "  trace -> " << csv_path << "\n";
   return td;
 }
