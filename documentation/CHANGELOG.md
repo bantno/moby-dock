@@ -39,6 +39,27 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-29 — Jack — Math-spec nomenclature + real nominal-controller section
+
+**Branch/commit:** corbin-dev (committed this session)
+**What changed:** Added a **Nomenclature** section to `water_landing_cbf_math.md` — grouped
+symbol / units / code-identifier tables (state & control, aircraft & aero, environment, the
+descent/airspeed/contact-force/impact-load barriers, and the CBF/QP machinery), plus an
+overloaded-symbol callout (α, W, u, A, c̄). Rewrote **§2 (Nominal Control Strategy)** from the
+stale PX4-TECS placeholder to the controller actually in the code: a constant-thrust powered
+approach (PD on the augmented thrust state) + a γ→θ→δe cascade (outer PI, inner PD), with trim
+feedforward seeding and a runtime-gain table tied to `lon_scenario.yaml`.
+**Why:** Make the math spec presentable to an advisor and consistent with the implementation —
+the TECS text never matched the code, and symbols were undefined for an external reader.
+**Follow-ups / notes for collaborator:** §3.1's descent control-affine "closed form" is still
+labelled reference-only (live code differentiates `a_brk(V,γ)` via autodiff); §3.3 vs §3.5 still
+read as two contact-force barriers (3.5 is the implemented NACA TN 1516 one). Separate
+experimental work this session — energy-reachability CBF, nominal hold-off flare, parameter-sweep
+tool (`scripts/sweep.py`) — lives on branch `experiments-corbin` (pushed), not here. Key finding
+there: touchdown airspeed is drag-limited (clean VSPAero deck can't decelerate via pitch); real
+speed reduction needs landing-config drag.
+**Files touched:** documentation/water_landing_cbf_math.md, documentation/CHANGELOG.md
+
 ## 2026-06-28 — Jack — Merge `water-impact-cbf` into `corbin-dev`
 
 **Branch/commit:** corbin-dev (merge of `origin/water-impact-cbf` `8e2770a`)

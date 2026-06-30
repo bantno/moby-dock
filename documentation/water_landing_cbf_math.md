@@ -2,6 +2,138 @@
 
 This document outlines the mathematical foundation and Control Barrier Function (CBF) formulations for an autonomous seaplane landing system. The system employs a high-order CBF-QP (Quadratic Program) safety filter over a nominal flight controller to guarantee hull-safe touchdown sink rates, airspeed stall margins, and hydrodynamic impact-force limits.
 
+## Nomenclature
+
+All quantities are **SI** (m, s, rad, kg, N) unless noted; angles in radians. An overdot is a
+time derivative ($\dot x = \mathrm{d}x/\mathrm{d}t$); a hat denotes a nondimensional rate
+($\hat q$). The **Code** column gives the corresponding identifier in `lon_augmented.hpp` /
+`impact_barrier.hpp` where one exists.
+
+> **Overloaded symbols** (disambiguated by context): $\alpha$ — angle of attack *vs.* extended
+> class-$\mathcal{K}$ functions $\alpha_i(\cdot)$ *vs.* the hull coefficient $\alpha_\text{hull}$;
+> $W$ — weight $mg$ (§3.5) *vs.* the QP cost-weighting matrix (§4); $u$ — control vector (§1) *vs.*
+> the impact velocity-ratio $\dot y/\dot y_0$ (§3.5); $A$ — QP constraint matrix (§4) *vs.* the
+> aspect-ratio argument of $\phi(A)$ (§3.5); $\bar c$ — mean aerodynamic chord *vs.* class-$\mathcal{K}$
+> gains $c_i$.
+
+### State and control variables
+
+| Symbol | Code | Units | Meaning |
+|---|---|---|---|
+| $h$ | `LH` | m | Altitude above the water surface |
+| $V$ | `LV` | m/s | True airspeed (magnitude of the velocity vector) |
+| $\gamma$ | `LGAM` | rad | Flight-path angle (velocity-vector inclination, $+$ up) |
+| $\theta$ | `LTH` | rad | Pitch attitude (body-axis inclination) |
+| $q$ | `LQ` | rad/s | Body pitch rate, $q=\dot\theta$ |
+| $T$ | `LT` | N | Thrust (integral-augmented to a state) |
+| $\dot T$ | `LTDOT` | N/s | Thrust rate (augmented state) |
+| $\delta_e$ | `LDE` | rad | Elevator deflection (virtual, through the mixing map) |
+| $\ddot T$ | `LTDDOT` | N/s² | Thrust second derivative (control input) |
+| $\alpha$ | `alpha` | rad | Angle of attack, $\alpha=\theta-\gamma$ |
+| $x,\ u$ | — | — | Unaugmented state $[h,V,\gamma,\theta,q]$ / control $[\delta_e,T]$ |
+| $X,\ U$ | — | — | Augmented state $[h,V,\gamma,\theta,q,T,\dot T]$ / control $[\delta_e,\ddot T]$ |
+
+### Aircraft, geometry, and aerodynamics
+
+| Symbol | Code | Units | Meaning |
+|---|---|---|---|
+| $m$ | `mass` | kg | Aircraft mass |
+| $I_{yy}$ | `Iyy` | kg·m² | Pitch moment of inertia |
+| $S$ | `Sref` | m² | Wing reference area |
+| $\bar c$ | `cref` | m | Mean aerodynamic chord (moment reference length) |
+| $z_{cp}$ | `zcp` | m | Thrust-line vertical offset from the c.g. (thrust pitch moment) |
+| $L,\ D$ | `Lift`,`Drag` | N | Wind-axis lift and drag |
+| $C_L,\ C_D$ | `CL`,`CD` | — | Wind-axis lift/drag coefficients |
+| $C_{Fx},C_{Fz}$ | `CFx`,`CFz` | — | Body-axis force coefficients (VSPAero deck) |
+| $C_m$ | `CMy` | — | Body-axis pitching-moment coefficient |
+| $C_{m0}$ | `off_CMy` | — | Zero-$\alpha$ pitching-moment coefficient |
+| $C_{m\alpha}$ | `dAlpha_CMy` | 1/rad | Static pitch-stability derivative $\partial C_m/\partial\alpha$ |
+| $C_{mq}$ | `dQ_CMy` | — | Pitch-damping derivative $\partial C_m/\partial\hat q$ |
+| $C_{mM}$ | `dMach_CMy` | — | Mach derivative $\partial C_m/\partial\mathrm{Ma}$ |
+| $C_{m\delta_e}$ | `dDe_CMy` | 1/rad | Elevator control-effectiveness derivative |
+| $\hat q$ | `qhat` | — | Nondimensional pitch rate, $\hat q=q\bar c/(2V)$ |
+| $\mathrm{Ma}$ | `mach` | — | Mach number, $V/a_\text{sound}$ |
+| $a_\text{sound}$ | `a_sound` | m/s | Speed of sound |
+| $\bar q$ | `qbar` | Pa | Dynamic pressure, $\tfrac12\rho_a V^2$ |
+| $C_{L,\max}$ | `CL_max` | — | Maximum (stall) lift coefficient — config placeholder |
+| $C_{D,\text{maxlift}}$ | — | — | Drag coefficient at the extrapolated max-lift $\alpha$ |
+
+### Environment and physical constants
+
+| Symbol | Code | Units | Meaning |
+|---|---|---|---|
+| $g$ | `g` | m/s² | Gravitational acceleration |
+| $\rho_a$ | `rho` | kg/m³ | Air density |
+| $\rho_w$ | `rho_water` | kg/m³ | Water density |
+
+### Descent-rate and airspeed barriers (§3.1–3.2)
+
+| Symbol | Code | Units | Meaning |
+|---|---|---|---|
+| $b$ | — | m/s | Descent-rate barrier value |
+| $b_V$ | — | m/s | Airspeed (stall) barrier, $V-V_\text{min}$ |
+| $b_{V,\max}$ | — | m/s | Airspeed (over-speed) barrier, $V_\text{max}-V$ |
+| $v_\text{safe}$ | `v_safe` | m/s | Hull-safe touchdown sink rate |
+| $a_\text{brk}$ | — | m/s² | Available braking (upward) acceleration at the current state |
+| $V_\text{min}$ | `Vmin` | m/s | Stall-margin minimum airspeed |
+| $V_\text{max}$ | `Vmax_air` | m/s | Never-exceed / over-speed airspeed (placeholder) |
+
+### Contact-force barrier — conceptual (§3.3)
+
+| Symbol | Units | Meaning |
+|---|---|---|
+| $b_\text{comp},\ b_F$ | m/s | Composite attitude-coupled contact-force barrier |
+| $F_\text{max}$ | N | Allowable peak structural impact force |
+| $C_s$ | — | Slamming (impact-pressure) coefficient |
+| $\beta_\text{eff}$ | rad | Effective deadrise angle, $\beta_\text{hull}+(\theta-\theta_\text{surf})$ |
+| $\beta_\text{hull}$ | rad | Hull deadrise angle |
+| $\theta_\text{surf}$ | rad | Water-surface slope angle |
+| $A_\text{ref}$ | m² | Reference wetted area |
+
+### Impact-load barrier — implemented, NACA TN 1516 (§3.5)
+
+| Symbol | Code | Units | Meaning |
+|---|---|---|---|
+| $b_\text{imp}$ | — | — | Impact-load barrier value |
+| $n_\text{peak}$ | `n_peak` | g | Peak c.g. load factor a contact at the current state would produce |
+| $n_\text{limit}$ | `n_limit` | g | Allowable load-factor limit |
+| $\tau$ | `tau` | rad | Trim angle, $\tau=\theta-\theta_\text{keel}$ |
+| $\theta_\text{keel}$ | — | rad | Keel/hull reference-line angle |
+| $\gamma_0$ | — | rad | Approach flight-path angle, $\gamma_0=-\gamma$ |
+| $\dot y_0$ | `ydot0` | m/s | Sink rate at contact, $\dot y_0=-V\sin\gamma$ |
+| $\kappa$ | `kappa` | — | Approach parameter (eq 20), $\tfrac{\sin\tau}{\sin\gamma_0}\cos(\tau+\gamma_0)$ |
+| $C_{lf}$ | `Clf` | — | Load-factor coefficient (eqs 25/27) — **not** the aerodynamic $C_L$ |
+| $u$ | — | — | Velocity ratio $\dot y/\dot y_0$ at peak acceleration (eq 27 root) |
+| $\alpha_\text{hull}$ | `alpha_hull` | — | Hull impact coefficient |
+| $f(\beta)$ | `f_beta` | — | Deadrise function $\tfrac{\pi}{2\beta}-1$ (eq 45) |
+| $\phi(A)$ | `phi_A` | — | Aspect-ratio/immersion correction $1-\tfrac{\tan\tau}{2\tan\beta}$ (eq 49) |
+| $W$ | — | N | Weight, $W=mg$ |
+| $K_0$ | `K0` | g·s²/m² | Frozen hull coefficient, $(\alpha_\text{hull}/(Wg^2))^{1/3}$ |
+| $z$ | — | m | Height above water (impact-barrier argument) |
+| $\Phi(z)$ | `Phi` | — | Height-relaxation budget, $N_b(1-e^{-z/z_s})$ |
+| $N_b$ | `Nb` | — | Relaxation saturation budget (aloft value of $\Phi$) |
+| $z_s$ | `zs` | m | Relaxation height scale |
+| $z_\text{gate}$ | `z_gate` | m | Model-valid gating height (row assembled only below it) |
+| $C_{lf,0},\ \tfrac{\mathrm{d}C_{lf}}{\mathrm{d}\kappa}$ | — | — | Frozen local-affine $C_{lf}(\kappa)$ model, anchored at $\kappa_0$ |
+
+### CBF / QP machinery (§3–4)
+
+| Symbol | Meaning |
+|---|---|
+| $\alpha_i(\cdot)$ | Extended class-$\mathcal{K}$ functions (linear here, $\alpha_i(s)=c_i s$) |
+| $c_i$ | Class-$\mathcal{K}$ gains (per barrier; e.g. descent $[c_1,c_2,c_3]$) |
+| $\psi_i$ | HOCBF cascade functions, $\psi_0=b,\ \psi_i=\dot\psi_{i-1}+\alpha_i(\psi_{i-1})$ |
+| $L_F^k b$ | $k$-th Lie derivative of $b$ along the drift $F$ (drift stack) |
+| $L_G L_F^{r-1}b$ | Control Lie derivative (the QP authority/row) |
+| $r$ | Relative degree of a barrier |
+| $A,\ \mathbf{b}_{qp}$ | QP constraint matrix and right-hand-side vector |
+| $W$ | QP cost-weighting matrix (in $\tfrac12\|U-U_\text{nom}\|_W^2$) |
+| $U_\text{nom}$ | Nominal control from the nominal controller |
+| $U^\star$ | QP-optimal (safety-filtered) control |
+| $K_p,\ K_d$ | Nominal thrust-tracking PD gains (§2) |
+
+---
+
 ## 1. System Dynamics and State Space
 
 The aircraft is modeled in the longitudinal (pitch-plane) utilizing a dynamic extension (integral augmentation) on the thrust channel to align the relative degrees of the control inputs.
@@ -30,17 +162,76 @@ To solve the mixed-relative-degree problem between elevator ($\delta_e$) and thr
 
 ---
 
-## 2. Nominal Control Strategy (PX4 TECS Integration)
+## 2. Nominal Control Strategy (Constant-Thrust Powered Approach)
 
-The nominal controller is responsible for the baseline glide-slope capture. We utilize the PX4 Total Energy Control System (TECS). 
+The nominal controller's only job is to put the aircraft on a reasonable glide slope; the
+CBF-QP owns all safety-critical shaping. In particular **the flare is not designed into the
+nominal** — it emerges from the degree-3 descent-rate barrier near the surface (§3.1). We
+therefore use a deliberately minimal, platform-agnostic law: a **constant-thrust powered
+approach** with a **cascade elevator loop** that holds a constant (negative) flight-path angle.
+This replaces the PX4 TECS of earlier drafts. Code: `include/autoland/lon_nominal.hpp`; wiring
+and trim seeding: `src/lon_sim.cpp`.
 
-Because the system is augmented, the QP optimizes $\ddot{T}$, but TECS outputs a raw thrust/throttle setpoint ($T_\text{TECS}$). To avoid the noise amplification of differentiating the TECS output, we treat $T_\text{TECS}$ as a tracking reference for our augmented thrust state using a Proportional-Derivative (PD) control law:
+### 2.1 Thrust channel (PD on the augmented thrust state)
 
+The system is augmented, so the QP optimizes $\ddot{T}$, but the operator wants to command a
+thrust *level* $T_\text{set}$. To avoid differentiating a setpoint, we let the augmented thrust
+state track $T_\text{set}$ through a PD law whose output is the control $\ddot T$:
 $$
-\ddot{T}_\text{nom} = K_p (T_\text{TECS} - T) - K_d \dot{T}
+\ddot{T}_\text{nom} = K_{p,T}\,(T_\text{set} - T) - K_{d,T}\,\dot{T}.
+$$
+Thrust is held *constant* (no airspeed feedback in the nominal). The approach is **powered**
+on purpose: carrying thrust keeps airspeed energy available for the emergent flare. Airspeed
+itself is protected by the airspeed CBF (§3.2), not the nominal.
+
+### 2.2 Elevator channel (flight-path-angle cascade)
+
+A two-loop cascade converts a flight-path-angle reference into an elevator command.
+
+**Outer loop — PI on $\gamma$ to an attitude command** (with an anti-windup clamp):
+$$
+\theta_\text{cmd} = \theta_\text{trim}
+  + K_{p,\gamma}\,(\gamma_\text{ref} - \gamma)
+  + K_{i,\gamma}\!\int (\gamma_\text{ref} - \gamma)\,\mathrm{d}t,
+\qquad
+\big|\theta_\text{cmd} - \theta_\text{trim}\big| \le \theta_{\text{cmd},\max}.
+$$
+The integrator is conditionally frozen (back-calculated) whenever the clamp is active, so it
+does not wind up against the attitude limit.
+
+**Inner loop — PD on $\theta$ to elevator** (with pitch-rate damping):
+$$
+\delta_{e,\text{nom}} = K_{p,\theta}\,(\theta_\text{cmd} - \theta) - K_q\,q.
 $$
 
-The nominal elevator command $\delta_{e,\text{nom}}$ is taken directly from the TECS pitch control output. The nominal control vector passed to the QP is $U_\text{nom} = [\delta_{e,\text{nom}}, \ddot{T}_\text{nom}]^T$.
+The nominal control vector passed to the QP is
+$U_\text{nom} = [\delta_{e,\text{nom}},\ \ddot{T}_\text{nom}]^T$.
+
+### 2.3 Feedforward / trim seeding
+
+The feedforward terms are seeded from a 6-DOF trim solve at the approach condition
+$(V_\text{app}, \gamma_\text{app})$ before the run, then optionally overridden by config:
+$\theta_\text{trim}$ from the trim attitude, $\gamma_\text{ref} = \gamma_\text{app}$, and
+$T_\text{set}$ from the trim thrust. Because $\theta_\text{trim}$ and $T_\text{set}$ only feed a
+*feedback* controller, the small mismatch between the body-axis trim and the longitudinal model
+is harmless. (The run itself starts from a steady level-flight trim of the longitudinal model,
+`lonTrim()`; the nominal then commands $\gamma_\text{ref}$ and the aircraft pushes over into the
+approach — see design doc §8.4.)
+
+### 2.4 Runtime configuration (`data/lon_scenario.yaml`)
+
+| Parameter | Symbol | Value | Note |
+|---|---|---|---|
+| Approach airspeed | $V_\text{app}$ | 18 m/s | sets the trim seed |
+| Approach path angle | $\gamma_\text{app}=\gamma_\text{ref}$ | $-3^\circ$ | shallow (clean high-L/D aero) |
+| Thrust setpoint | $T_\text{set}$ | 2.0 N | powered approach (config override of trim seed) |
+| Thrust PD | $K_{p,T},\,K_{d,T}$ | 4.0, 4.0 | |
+| $\gamma\!\to\!\theta_\text{cmd}$ PI | $K_{p,\gamma},\,K_{i,\gamma}$ | 2.0, 0.5 | |
+| Attitude-command clamp | $\theta_{\text{cmd},\max}$ | $25^\circ$ | anti-windup limit |
+| $\theta\!\to\!\delta_e$ PD | $K_{p,\theta},\,K_q$ | 1.0, 0.25 | scaled down ~8× for the real mass |
+
+These are tuning values for the present airframe/scenario, not first-principles constants; see
+the design doc and `TODO.md` for outstanding calibration items.
 
 ---
 
