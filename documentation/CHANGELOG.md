@@ -39,6 +39,119 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-30 — Brian — Add NACA 4414 viscous-stall plant model
+**Branch/commit:** stall-model
+**What changed:** The longitudinal plant can now **stall**. The base deck
+(`AHAB_combined.stab`) is inviscid VSPAERO (lift linear to ±20°, no stall, and its
+post-stall values are meaningless), so above stall onset the plant **hands the lift off**
+from VSPAERO to a viscous + flat-plate post-stall curve via a blend:
+`C_plant = (1−w)·C_vspaero + w·C_post`. The blend weight `w(α)` smoothsteps 0→1 across the
+wing stall, so VSPAERO is **discarded** (weighted to zero) above onset. `C_post` is a
+**Viterna & Corrigan flat-plate extrapolation** (standard BEM post-stall method) anchored at
+the wing stall point, so the lift **craters off CLmax and declines to 0 at 90°** while drag
+rises to `CD_max ≈ 1.23`. The 4414 **2D viscous polar** (NeuralFoil, an Xfoil surrogate, Re
+~2.5×10⁵) sets the realistic CLmax level. New files: generators
+`scripts/{gen_4414_polar,precompute_stall_table}.py` → committed table
+`include/autoland/naca4414_stall_table.hpp` (`w/CLpost/CDpost/CMpost(α)` to 90°); lookup
+`include/autoland/stall_model.hpp` (`stallLookup`, value+slope, mirrors `clfLookup`); blend
+frozen in `makeAeroLocal` and applied in `LonDrift` (`src/lon_augmented.cpp`,
+`lon_augmented.hpp`). Config: `AircraftConfig::stall {enabled,severity}` (`config.{hpp,cpp}`,
+`aircraft.yaml`, default **OFF**), with an optional scenario-level `stall:` override
+(`lon_sim.cpp`). Diagnostics: CSV gains `CL,CD,dCL_stall`; `scripts/plot_stall_model.py` →
+`figures/stall_model_check.png`. Demo scenario `data/lon_stall_recovery.yaml`.
+**Why:** Stall-recovery control work needs a plant that actually stalls. The inviscid deck
+cannot — it lifts linearly forever — so there is nothing to recover from. VSPAERO's only
+"stall" option is a CLmax clamp (a plateau, not a departure), and its inviscid lift past stall
+is fiction; we need the real lift crater + drag rise + pitch break, with VSPAERO thrown out
+above onset.
+**Design choices:**
+- **Blend, not additive deltas.** `(1−w)·C_vspaero + w·C_post` discards VSPAERO above onset
+  (the user's point: VSPAERO doesn't model stall at all, so blending *toward* its post-stall
+  values is wrong). An earlier additive `ΔCL = CL_vspaero·(f−1)` formulation was scrapped: it
+  kept multiplying the (fictional) rising inviscid lift, and the deep-stall tail plateaued
+  instead of cratering.
+- **Viterna flat-plate tail.** Standard post-stall extrapolation: lift follows `sin 2α` to 0 at
+  90°, drag → `CD_max = 1.11+0.018·AR`. Replaces the non-physical plateau; deep stall now
+  craters.
+- **Frozen-affine, shared plant+CBF.** Lives in `makeAeroLocal`, frozen as local-affine
+  `{off + slope·α}` for `w` and each post-coefficient, so it reuses the exact-Lie path; the
+  plant re-freezes each RK4 substep. `w=0` in attached flow ⇒ the CBF is untouched.
+- **Stall point is a tunable knob, not truth.** NeuralFoil→Xfoil→reality is weakest at low-Re
+  post-stall; onset/level are generator knobs (`A_STALL_DEG`, `BLEND_HALF_DEG`, `SEVERITY`).
+  Defaults: CLmax ≈ **1.44 @ 11°** (≤ the 2D section CLmax 1.46), → 0.80 by 45°, 0 at 90°.
+- **OFF by default**, the disabled `LonDrift` path runs zero extra ops. Valid to ~90° α (table
+  clamps above; a tumble past 90° is outside the model).
+**Verified:** Nominal approach **bit-identical** stall on vs off (`max|Δh|=max|Δδe|=0`,
+`dCL_stall≡0`, max α≈2°). 5 new `[stall]` tests pass (lookup inert/held/interp; post-stall
+lift-decline-to-zero + drag-rise; blend hands CL/CD to the Viterna values and cuts lift).
+End-to-end `lon_stall_recovery` departs: climbs to CLmax≈1.42 @ α≈11°, then lift craters
+(0.90 @ 28°, 0.45 @ 69°, 0 @ 97°), CD→1.23, sink builds to ~10 m/s. Full suite: only the
+**pre-existing** `#19` fails (missing `AHAB_sweep.stab`, unrelated).
+**Follow-ups / notes for collaborator:** calibrate onset/level vs experimental low-Re 4414 or
+flight ID; optional 2nd table axis over Re; optional Goman–Krabrov separation **state** for
+dynamic-stall lag (doubles as a CBF state); wire an α-margin recovery barrier; optionally link
+the descent barrier's `CL_max` knob to the plant CLmax (~1.44). CSV gained 3 columns —
+name-keyed plot scripts unaffected.
+**Files touched:** `include/autoland/{naca4414_stall_table,stall_model,lon_augmented,config}.hpp`,
+`src/{lon_augmented,config,lon_sim}.cpp`, `scripts/{gen_4414_polar,precompute_stall_table,
+plot_stall_model}.py`, `data/{aircraft.yaml,lon_stall_recovery.yaml,naca4414_polar.csv}`,
+`test/test_stall_model.cpp`, `CMakeLists.txt`,
+`documentation/{stall_model_spec,water_landing_cbf_design,CHANGELOG}.md`, `README.md`, `TODO.md`.
+
+## 2026-06-28 — Brian — Add hydrodynamic impact-load HOCBF barrier (NACA TN 1516)
+**Branch/commit:** water-impact-cbf
+**What changed:** New independent CBF-QP row that bounds the **peak CG load factor at
+water touchdown**, derived from NACA TN 1516 (Milwitzky 1948). The barrier is
+`b = (n_limit − n_peak(θ,γ,V)) + Φ(z)` with `n_peak = K0·ẏ₀²·Clf(κ)` (peak load factor,
+g), the approach parameter `κ = sin τ/sin γ₀ · cos(τ+γ₀)`, and a height-relaxed term
+`Φ(z) = Nb(1−e^{−z/zs})` that makes it touchdown-only. New files: an offline precompute
+`scripts/precompute_impact_clf.py` (solves the transcendental eq 27 for the velocity
+ratio, evaluates eq 25, verifies the `Clf(0)=0.6123` anchor) → generated table
+`include/autoland/impact_clf_table.hpp`; the barrier itself in
+`include/autoland/impact_barrier.hpp` (`clfLookup`, `ImpactLoadBarrier`,
+`makeImpactLoadBarrier`). Wired into `LonCBFFilter` behind an `impact`/`impact_hard`
+flag set with new config (`n_limit`, `beta`, `rho_water`, `Nb`, `zs`, `tau_keel`,
+`z_gate`, `eps_g0`, `impact_slack_lo/hi`, `c_impact`) in `LonCBFConfig` +
+`lon_scenario.yaml` + the `lon_sim` loader. Added an `exp()` overload to the Taylor-jet
+Lie engine (`lie_taylor.hpp`) for `Φ`. The sim logs `b_impact,n_peak,kappa_imp` and the
+degree-2 `psi1/psi2_imp` + `res_imp`, and prints the impact ψ-minima.
+**Why:** Bound the structural *slam load* at hull contact — which depends on dead rise,
+trim, and sink rate, not just sink rate (the descent barrier's kinematic cap). This is
+the attitude-coupled contact-load constraint flagged as the §3.3 research item.
+**Design choices:**
+- **Degree-2 HOCBF, elevator-enforced.** The barrier is relative degree 2 via the
+  elevator (θ→q→δe) and 3 via thrust (T→Tdot→Tddot). A single affine row can't mix the
+  two (the elevator's degree-2 entry pushed to degree 3 yields non-affine u²/u̇ terms),
+  so it's built as a clean degree-2 row (`barrierLie<2>` + 2 class-K gains): thrust's
+  column in `L_gL_f b` is exactly 0 and drops out; the flare enforces it. Thrust still
+  bounds impact load via the existing descent/sink-rate barrier (spec §4).
+- **Frozen K0 + local-affine `Clf(κ)`** at the eval point (mirrors `makeDescentBarrier`),
+  so the templated barrier is smooth with no cbrt/pow in the Taylor path while the
+  attitude coupling stays live through `κ`.
+- **Activation:** Option A height-relaxed `Φ(z)` (primary) + Option C height-scheduled
+  slack (`impact_slack_lo→hi`) backstop. Plus a **model-validity gate** — the row is only
+  assembled below `z_gate` AND while descending with positive trim (NACA TN 1516's
+  validity domain); outside it the prediction is meaningless (κ<0) and would feed a
+  huge-coefficient row to the QP.
+- **Placeholders:** `n_limit=3 g`, `beta=22.5°`, `rho_water=1000` (fresh), `Nb=10`,
+  `zs=2 m`. Soft + enabled by default and sized **non-binding** (additive safety, zero
+  trajectory change), mirroring how the upper-airspeed barrier was introduced.
+**Verified:** **34/35 tests pass** — incl. 6 new (clfLookup monotone/clamp, closed-form
+value, relative-degree thrust-drops-out, drift flow-oracle for the degree-2 stack +
+`exp()`, Φ height-relaxation, hard-enforcement under a violating nominal). The 1
+remaining failure (`#19`, `test_cbf.cpp`) is **pre-existing** (old body-axis path, throws
+unrelated to this work). Default sim run **unchanged**: touchdown 0.0137 m/s, 0
+recoveries; `impact: min psi1=5.84, psi2=14.11 ≥ 0`; over the active window
+`n_peak ≤ 0.17 g « n_limit=3`, `κ∈[0.001,1.149]`, slack ≡ 0 (row never binds).
+**Follow-ups / notes for collaborator:** `n_limit`/`beta`/`Nb`/`zs`/`c_impact` need
+calibration/tuning (new `TODO.md` items). The full mixed-degree (2/3) treatment and a
+predictive/backup-set CBF remain open (§3.3). CSV gained 6 columns — name-keyed plot
+scripts are unaffected. Source paper added at `documentation/19930082553.pdf`.
+**Files touched:** `include/autoland/{lie_taylor,impact_barrier,impact_clf_table,
+lon_cbf_filter}.hpp`, `src/{lon_cbf_filter,lon_sim}.cpp`, `scripts/precompute_impact_clf.py`,
+`data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`documentation/{impact_load_barrier_spec,water_landing_cbf_design,CHANGELOG}.md`, `TODO.md`.
+
 ## 2026-06-27 — Jack — Add maximum-airspeed (over-speed) HOCBF barrier
 
 **Branch/commit:** corbin-dev

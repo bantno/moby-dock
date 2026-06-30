@@ -112,6 +112,18 @@ Taylor<N, S> sqrt(const Taylor<N, S>& a) {
   }
   return r;
 }
+// e(t) = exp(a(t)), from e' = a' e:  k e[k] = sum_{j=1}^k j a[j] e[k-j].
+template <int N, class S>
+Taylor<N, S> exp(const Taylor<N, S>& a) {
+  using std::exp;
+  Taylor<N, S> r; r[0] = exp(a[0]);
+  for (int k = 1; k <= N; ++k) {
+    S s = S(0.0);
+    for (int j = 1; j <= k; ++j) s += double(j) * a[j] * r[k - j];
+    r[k] = s / double(k);
+  }
+  return r;
+}
 
 // Build the order-R flow jet of X(t) (Xdot = f(X), X(0)=x0) and return
 // {b, L_f b, ..., L_f^R b} as coefficient-typed scalars. `f` and `b` are

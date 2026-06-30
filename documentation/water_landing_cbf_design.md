@@ -68,7 +68,7 @@ safety-critical shaping. Code: `include/autoland/lon_nominal.hpp`.
 | Airspeed (over-speed) `b_V,max` | `V_max − V` | 3 (δe & T̈) | Soft (slack) |
 | Min thrust | `T ≥ 0` | 2 (T̈) | Hard (closed form) |
 | Max thrust | `T_max − T ≥ 0` | 2 (T̈) | Hard (closed form) |
-| Contact-force `b_comp` | `V·sinγ + √(v_safe²(θ) + 2·a_brk·h)` | 2 (δe), 3 (T̈) | **Deferred — not implemented** |
+| Impact-load `b_imp` | `(n_limit − n_peak(θ,γ,V)) + Φ(z)` | **2 (δe)** | Soft (height-sched. slack) |
 
 The descent and airspeed HOCBF rows are built generically from the exact Lie stack via
 `hocbfRow()`; the thrust actuator barriers use closed forms. Code: `include/autoland/hocbf.hpp`,
@@ -78,6 +78,25 @@ The descent and airspeed HOCBF rows are built generically from the exact Lie sta
 elevator first appears in `b⃛`. The class-K cascade `ψ₃ = ψ̇₂ + c₃ψ₂ ≥ 0` is *predictive*, so the
 QP must begin pitching up early — that early pitch-up *is* the flare. A relative-degree-1 view
 of `b` cannot flare (`L_g b = 0`); the HOCBF is what makes the constraint enforceable.
+
+**Impact-load barrier (NACA TN 1516).** This is the attitude-coupled contact-load constraint
+(the §3.3 idea, realized rigorously rather than via a hand-shaped `v_safe(θ)`). It bounds the
+peak CG load factor a water contact at the current state would produce:
+`n_peak = K0·ẏ₀²·Clf(κ)`, `κ = sinτ/sinγ₀·cos(τ+γ₀)`, with the load-factor coefficient `Clf(κ)`
+precomputed offline (eqs 25/27, anchor `Clf(0)=0.6123`) and the hull coefficient
+`K0 = (α_hull/(W g²))^{1/3}` (dead rise via `f(β)`, `φ(A)`). A height-relaxed term
+`Φ(z)=Nb(1−e^{−z/zs})` makes it touchdown-only (Option A), backed by a height-scheduled slack
+(Option C). It is **relative degree 2 via the elevator** (θ→q→δe) and 3 via thrust; a single
+affine QP row can't mix the two (the elevator's degree-2 entry pushed to degree 3 gives
+non-affine u²/u̇ terms), so it's a clean degree-2 row — thrust's column in `L_gL_f b` is exactly
+zero and drops out, and the flare enforces it. Thrust still bounds impact load through the
+descent/sink-rate barrier (they overlap by design). `K0` and a local-affine `Clf(κ)` are frozen
+at the eval point (like `makeDescentBarrier`) so the templated barrier is smooth; the row is
+assembled only in the model-valid window (below `z_gate`, descending, positive trim). Soft +
+enabled + non-binding by default. Code: `include/autoland/impact_barrier.hpp`,
+`scripts/precompute_impact_clf.py`; reference: `documentation/impact_load_barrier_spec.md` and
+NACA TN 1516 (`documentation/19930082553.pdf`). Open: full mixed-degree (2/3) / predictive CBF
+(see §9 and `TODO.md`).
 
 ## 5. Method: exact Lie derivatives (no finite differences)
 
@@ -142,7 +161,9 @@ As of `2b610a3`, the model uses **real AHAB vehicle data**, not placeholders:
   `zcp = 0.15 m`; `parasite_CD0 = 0.030`. (Thrust `k_v` and `parasite_CD0` still uncalibrated.)
 - `data/AHAB_combined.stab`: real combined VSPAero aero deck. This is now the **default** deck
   for `lon_autoland_sim` (the old `example.stab` placeholder is kept only for the unit tests;
-  removing it is a backlog item).
+  removing it is a backlog item). The deck is **inviscid** (lift linear to ±20°, no stall); an
+  optional NACA 4414 viscous-stall overlay can be enabled on top of it — see below and
+  `stall_model_spec.md`.
 - `data/lon_scenario.yaml`: powered approach `T_set = 2.0 N`, `V_app = 18`, `γ = −3°`,
   `v_safe = 0.1`, `CL_max = 1.2` (placeholder, drives `a_brk(V,γ)`), `Vmin = 13.5`,
   `V_max = 27` (placeholder over-speed ceiling, ~1.5·V_app; non-binding on this approach), `Tmax = 50`,
@@ -184,6 +205,13 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
    noise, instantaneous elevator (no actuator lag).
 10. **§3.3 deferred ⇒ "hull-safe" is incomplete.** `v_safe` is a flat constant and touchdown
     attitude is unconstrained; real slamming load is attitude-dependent.
+11. **Optional viscous stall (plant).** An optional NACA 4414 stall overlay (NeuralFoil-derived,
+    `stall_model_spec.md`) gives the otherwise-stall-free inviscid deck a real post-stall lift
+    drop / drag rise / pitch break. OFF by default (nominal behaviour bit-identical). Its onset
+    and depth are **tunable engineering values, not experiment-validated** (NeuralFoil→Xfoil→
+    reality is weakest at low-Re post-stall), and it is frozen local-affine like the rest of the
+    aero (item 3). It is shared into the CBF path, so the self-consistent-plant property (item 1)
+    still holds when it is enabled. Designing a stall-recovery barrier on top is future work.
 
 ## 9. Open questions / follow-ups
 

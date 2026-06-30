@@ -6,6 +6,7 @@
 #include "autoland/aero_table.hpp"
 #include "autoland/config.hpp"
 #include "autoland/hocbf.hpp"
+#include "autoland/impact_barrier.hpp"
 #include "autoland/lon_augmented.hpp"
 #include "autoland/lon_cbf_filter.hpp"
 #include "autoland/mixing.hpp"
@@ -117,8 +118,13 @@ TEST_CASE("descent barrier uses speed-dependent a_brk(V,gamma)", "[lon_cbf]") {
   const double CDml = cdAtMaxLift(a, CLmax, V);
   const double abrk = (0.5 * a.rho * a.Sref / a.mass) * V * V *
                           (CLmax * std::cos(gamma) - CDml * std::sin(gamma)) - a.g;
-  const double b_expected = V * std::sin(gamma) +
-                            std::sqrt(v_safe * v_safe + 2.0 * abrk * X[LH]);
+  // The barrier floors the radicand with the smooth positive map eps_r (so it can
+  // never go NaN); mirror it here. At this safe state (h=30) the floor is a ~1e-9
+  // bias, but reproducing it keeps the exact-match tolerance meaningful.
+  const double arg = v_safe * v_safe + 2.0 * abrk * X[LH];
+  const double arg_pos =
+      0.5 * (arg + std::sqrt(arg * arg + 4.0 * b.eps_r * b.eps_r));
+  const double b_expected = V * std::sin(gamma) + std::sqrt(arg_pos);
 
   CHECK(b(toArray(X)) == Approx(b_expected).epsilon(1e-12));
   CHECK(abrk > 0.0);                            // real braking authority
@@ -375,4 +381,154 @@ TEST_CASE("lon filter enforces the upper airspeed barrier when hard", "[lon_cbf]
                            cfg.c_airspeed_upper[2]});
   const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
   CHECK(lhs <= row.rhs + 1e-6);
+}
+
+// =============================================================================
+// Hydrodynamic impact-load barrier (NACA TN 1516).
+// =============================================================================
+
+// clfLookup reproduces the generated table endpoints, is monotone, and clamps
+// outside the practical range. (The paper anchor Clf(0)=0.6123 is enforced by
+// scripts/precompute_impact_clf.py, which generates the table; kappa=0 is below
+// the table's [0.2,10] range and clamps to the first entry at run time.)
+TEST_CASE("clfLookup is monotone and clamps to the practical range", "[lon_cbf]") {
+  CHECK(clfLookup(kImpactClfKappa[0]).value == Approx(kImpactClfVal[0]).epsilon(1e-9));
+  CHECK(clfLookup(kImpactClfKappa[kImpactClfN - 1]).value ==
+        Approx(kImpactClfVal[kImpactClfN - 1]).epsilon(1e-9));
+  CHECK(clfLookup(0.0).value == Approx(kImpactClfVal[0]).epsilon(1e-12));        // clamp lo
+  CHECK(clfLookup(50.0).value == Approx(kImpactClfVal[kImpactClfN - 1]).epsilon(1e-12));  // clamp hi
+  double prev = -1e9;
+  for (int i = 0; i < kImpactClfN; ++i) { CHECK(kImpactClfVal[i] > prev); prev = kImpactClfVal[i]; }
+  const double km = 0.5 * (kImpactClfKappa[3] + kImpactClfKappa[4]);  // interpolated point
+  const ClfLocal m = clfLookup(km);
+  CHECK(m.value > kImpactClfVal[3]);
+  CHECK(m.value < kImpactClfVal[4]);
+}
+
+// The barrier value matches its closed form (n_limit - K0 ydot0^2 Clf) + Phi(z)
+// exactly, using the same frozen constants (catches a sign/term error). Also
+// pins f(beta) = 3.0 at beta = 22.5 deg (eq 45).
+TEST_CASE("impact barrier value matches its closed form", "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -4.0 * kDeg, theta = 3.0 * kDeg, h = 4.0;
+  const double beta = 22.5 * kDeg, n_limit = 3.0, rho_w = 1000.0;
+  const double Nb = 10.0, zs = 2.0, tau_keel = 0.0, eps_g0 = 0.02;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << h, V, gamma, theta, 0.0, 2.0, 0.0;
+
+  const ImpactLoadBarrier b =
+      makeImpactLoadBarrier(a, n_limit, beta, rho_w, Nb, zs, tau_keel, eps_g0, X);
+
+  const double gamma0 = -gamma;
+  const double sg0 = std::sqrt(std::sin(gamma0) * std::sin(gamma0) + eps_g0 * eps_g0);
+  const double tau = theta - tau_keel;
+  const double kappa = std::sin(tau) * std::cos(tau + gamma0) / sg0;
+  const double ydot0 = -V * std::sin(gamma);
+  const double Clf = b.Clf0 + b.dClf_dk * (kappa - b.kappa0);
+  const double n_peak = b.K0 * ydot0 * ydot0 * Clf;
+  const double Phi = Nb * (1.0 - std::exp(-h / zs));
+  CHECK(b(toArray(X)) == Approx((n_limit - n_peak) + Phi).epsilon(1e-12));
+  CHECK((M_PI / (2.0 * beta) - 1.0) == Approx(3.0).epsilon(1e-9));  // f(beta), eq 45
+}
+
+// Relative degree: a degree-2 HOCBF. The elevator appears in L_g L_f b; thrust
+// (Tddot, relative degree 3) does NOT (its column is ~0). This is exactly what
+// lets the degree-2 row be flare-enforced while reusing barrierLie<2>.
+TEST_CASE("impact barrier is relative degree 2 via the elevator", "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -4.0 * kDeg, theta = 3.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 4.0, V, gamma, theta, 0.2, 2.0, 0.5;  // nonzero q, T, Tdot
+  const ImpactLoadBarrier b =
+      makeImpactLoadBarrier(a, 3.0, 22.5 * kDeg, 1000.0, 10.0, 2.0, 0.0, 0.02, X);
+  auto lie = barrierLie<2>(a, b, X);
+  CHECK(std::abs(lie.LgLf(0, LTDDOT)) < 1e-9);  // thrust drops out at degree 2
+  CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);     // elevator has flare authority
+}
+
+// Phi(z) makes the barrier touchdown-only: at altitude b ~ (n_limit-n_peak)+Nb
+// (inactive); at z=0 Phi=0 so b = n_limit - n_peak (the true contact constraint).
+// The frozen constants depend on (V,theta,gamma) only, so b(h) - b(0) = Phi(h).
+TEST_CASE("impact barrier height relaxation engages only near the surface", "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -4.0 * kDeg, theta = 3.0 * kDeg;
+  const double Nb = 10.0, zs = 2.0;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  auto barrier_at = [&](double h) {
+    LonStateVec X;
+    X << h, V, gamma, theta, 0.0, 2.0, 0.0;
+    const ImpactLoadBarrier b =
+        makeImpactLoadBarrier(a, 3.0, 22.5 * kDeg, 1000.0, Nb, zs, 0.0, 0.02, X);
+    return b(toArray(X));
+  };
+  const double b0 = barrier_at(0.0);     // Phi = 0
+  const double bhi = barrier_at(20.0);   // Phi ~ Nb
+  CHECK(bhi - b0 == Approx(Nb * (1.0 - std::exp(-20.0 / zs))).epsilon(1e-9));
+  CHECK(bhi > b0 + 0.9 * Nb);            // strongly relaxed aloft
+}
+
+// Independently cross-check the impact barrier's degree-2 drift stack
+// {b, L_f b, L_f^2 b} against the finite-difference flow oracle. Also exercises
+// the new exp() Taylor overload (through Phi) along a descending flow.
+TEST_CASE("impact barrier drift Lie stack matches the flow oracle", "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -4.0 * kDeg, theta = 3.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 4.0, V, gamma, theta, 0.2, 2.0, 0.5;  // descending; nonzero q, T, Tdot
+  const ImpactLoadBarrier b =
+      makeImpactLoadBarrier(a, 3.0, 22.5 * kDeg, 1000.0, 10.0, 2.0, 0.0, 0.02, X);
+  const auto lie = barrierLie<2>(a, b, X);
+  const auto orc = lieDriftOracle(a, b, X, 1e-2, 200);  // returns 4; compare [0..2]
+  CHECK(lie.Lf[0] == Approx(orc[0]).epsilon(1e-9).margin(1e-9));
+  CHECK(lie.Lf[1] == Approx(orc[1]).epsilon(1e-3).margin(1e-6));
+  CHECK(lie.Lf[2] == Approx(orc[2]).epsilon(1e-3).margin(1e-6));
+}
+
+// Safety guarantee: with the impact barrier hard and a state just inside the
+// safe set, an unsafe nominal (nose-down, which drives the predicted load up) is
+// corrected so the assembled degree-2 impact row a . U <= rhs holds.
+TEST_CASE("lon filter enforces the impact barrier when hard", "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -5.0 * kDeg, theta = 4.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 3.0, V, gamma, theta, 0.0, 1.5, 0.0;  // low altitude, steady descent
+
+  // Measure n_peak here (Nb=0, n_limit=0 => b = -n_peak), then set n_limit just
+  // above it so the state is barely inside the safe set and the row is active.
+  const ImpactLoadBarrier probe =
+      makeImpactLoadBarrier(a, 0.0, 22.5 * kDeg, 1000.0, 0.0, 2.0, 0.0, 0.02, X);
+  const double n_peak = -probe(toArray(X));
+
+  LonCBFConfig cfg;
+  cfg.descent = false; cfg.airspeed = false; cfg.airspeed_upper = false;
+  cfg.thrust_limits = false; cfg.impact = true; cfg.impact_hard = true;
+  cfg.Nb = 0.0;                 // no height relaxation -> barrier fully active
+  cfg.n_limit = n_peak + 1.0;   // ~1 g margin inside the safe set
+  cfg.z_gate = 50.0;
+  LonCBFFilter filter(cfg);
+
+  // Assemble the same (hard) impact row the filter will, then drive the nominal
+  // elevator hard onto the violating side of a . U <= rhs.
+  const ImpactLoadBarrier b = makeImpactLoadBarrier(
+      a, cfg.n_limit, cfg.beta, cfg.rho_water, cfg.Nb, cfg.zs, cfg.tau_keel, cfg.eps_g0, X);
+  auto lie = barrierLie<2>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf, {cfg.c_impact[0], cfg.c_impact[1]});
+  const double a_de = row.a(0, LDE);
+  REQUIRE(std::abs(a_de) > 1e-6);
+  CHECK(std::abs(row.a(0, LTDDOT)) < 1e-9);  // thrust absent from the degree-2 row
+
+  LonCtrlVec Un;
+  Un << (a_de > 0 ? cfg.de_max : cfg.de_min), 0.0;  // most-violating elevator in-box
+  REQUIRE(a_de * Un[LDE] > row.rhs + 1e-6);          // it really violates the row
+
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);  // the unsafe command was corrected
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);   // assembled impact row now holds
 }

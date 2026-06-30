@@ -39,6 +39,17 @@ cg_offset:
 aero:
   parasite_CD0: 0.030
 
+# --- Viscous stall model (NACA 4414) -----------------------------------------
+# The inviscid .stab cannot stall. When enabled, the plant overlays the
+# precomputed NACA 4414 stall deltas (include/autoland/naca4414_stall_table.hpp,
+# regenerate via scripts/precompute_stall_table.py) so it gains a real post-stall
+# lift drop, drag rise and pitch break. OFF by default => identical to the
+# inviscid deck (the deltas are ~0 in attached flow regardless). `severity`
+# scales the deltas (1 = as-generated). See documentation/stall_model_spec.md.
+stall:
+  enabled: false
+  severity: 1.0
+
 # --- Thrust model: T = throttle * (T_static - k_v * V), clamped >= 0 ---------
 # TODO: replace with measured thrust-stand data (hook: Dynamics::setThrustModel).
 thrust:
