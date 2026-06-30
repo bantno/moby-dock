@@ -1,5 +1,7 @@
 #include "autoland/lon_augmented.hpp"
 
+#include "autoland/stall_model.hpp"
+
 namespace autoland {
 
 AeroLocal makeAeroLocal(const AeroTable& table, const Mixing& mixing,
@@ -36,6 +38,21 @@ AeroLocal makeAeroLocal(const AeroTable& table, const Mixing& mixing,
   for (int gidx = 0; gidx < static_cast<int>(d.d_ctrl.size()) && gidx < M.rows(); ++gidx)
     dDe += d.d_ctrl[gidx][CMY] * M(gidx, 0);
   a.dDe_CMy = dDe;
+
+  // Viscous-stall overlay: freeze the NACA 4414 blend at the eval point alpha as
+  // local affine models {off + slope*alpha}, folding -slope*alpha into the offset
+  // (mirrors the off() lambda above). LonDrift forms (1-w)*C_vspaero + w*C_post.
+  // severity scales the blend weight w (depth knob: 0 => no stall, 1 => full).
+  // Default off => never touched => identical to the inviscid deck.
+  a.stall_on = cfg.stall.enabled;
+  if (a.stall_on) {
+    const StallBlend s = stallLookup(alpha);
+    const double sev = cfg.stall.severity;
+    a.dAlpha_w = sev * s.w_da;      a.off_w = sev * s.w - a.dAlpha_w * alpha;
+    a.dAlpha_CLp = s.CLpost_da;     a.off_CLp = s.CLpost - a.dAlpha_CLp * alpha;
+    a.dAlpha_CDp = s.CDpost_da;     a.off_CDp = s.CDpost - a.dAlpha_CDp * alpha;
+    a.dAlpha_CMp = s.CMpost_da;     a.off_CMp = s.CMpost - a.dAlpha_CMp * alpha;
+  }
   return a;
 }
 

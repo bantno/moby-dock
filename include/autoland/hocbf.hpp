@@ -22,10 +22,15 @@
 namespace autoland {
 
 // --- Barriers (templated on element type so the Lie engine can autodiff them) -
-// Descent (soft-landing) barrier  b = V sin(gamma) + sqrt(v_safe^2 + 2 a_brk h),
+// Descent (soft-landing) barrier  b = V sin(gamma) + sqrt(v_safe^2 + 2 a_brk (h-h0)),
 // with the braking acceleration now SPEED / PATH-ANGLE dependent (lift + drag +
 // gravity), not a constant:
 //   a_brk(V,gamma) = (rho V^2 S / 2m)[CLmax cos(gamma) - CDmaxlift sin(gamma)] - g
+// h0 is the FLARE HEIGHT [m]: the kinematic budget brings the sink rate down to
+// v_safe at h = h0 rather than at the surface, so h0 is a direct knob on where the
+// level-out begins (h0 = 0 recovers the original flare-at-the-water barrier). For
+// h < h0 the radicand goes negative and the smooth eps_r floor drives b -> V sin g,
+// i.e. the barrier then demands sink -> 0 (the flare is fully commanded).
 // Thrust is deliberately omitted: putting the thrust state T / pitch theta into b
 // would drop the barrier's relative degree below 3 and break the augmented HOCBF
 // alignment (that theta-coupling is the section 3.3 mixed-degree problem). Lift
@@ -35,6 +40,7 @@ struct DescentBarrier {
   double v_safe2{0};
   double rho{0}, Sref{0}, mass{0}, g{0};  // environment / geometry
   double CLmax{0}, CDmaxlift{0};          // stall ceiling + its drag coefficient
+  double h0{0};                           // flare height [m] (level-out altitude)
   // Numerical regularizer [m^2/s^2] on the kinematic radicand -- NOT a tuning
   // knob. When the braking envelope momentarily has no real solution
   // (v_safe2 + 2*a_brk*h < 0 -- e.g. the touchdown sample where h dips below 0,
@@ -54,7 +60,7 @@ struct DescentBarrier {
     const T V = X[LV], gam = X[LGAM];
     const T a_brk = (0.5 * rho * Sref / mass) * (V * V) *
                         (CLmax * cos(gam) - CDmaxlift * sin(gam)) - g;
-    const T arg = v_safe2 + (2.0 * a_brk) * X[LH];
+    const T arg = v_safe2 + (2.0 * a_brk) * (X[LH] - h0);
     // arg_pos = 0.5(arg + sqrt(arg^2 + 4 eps_r^2)) > 0 for all arg; -> arg for
     // arg >> eps_r, -> 0+ for arg << -eps_r. eps_r is small enough that the
     // normal-flight bias (~eps_r^2/arg, arg ~ 1e2..1e3) is negligible.
@@ -84,7 +90,7 @@ inline double cdAtMaxLift(const AeroLocal& a, double CLmax, double V) {
 // Build the descent barrier from the frozen aero + config, filling in the
 // a_brk(V,gamma) constants (including the max-lift drag coefficient at V).
 inline DescentBarrier makeDescentBarrier(const AeroLocal& a, double v_safe,
-                                         double CLmax, double V) {
+                                         double CLmax, double V, double h0 = 0.0) {
   DescentBarrier b;
   b.v_safe2 = v_safe * v_safe;
   b.rho = a.rho;
@@ -93,6 +99,7 @@ inline DescentBarrier makeDescentBarrier(const AeroLocal& a, double v_safe,
   b.g = a.g;
   b.CLmax = CLmax;
   b.CDmaxlift = cdAtMaxLift(a, CLmax, V);
+  b.h0 = h0;
   return b;
 }
 

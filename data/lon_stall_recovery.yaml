@@ -1,0 +1,44 @@
+# =============================================================================
+# Stall-departure demo for the NACA 4414 viscous-stall plant model.
+#
+# Enables the stall overlay (scenario-level override; aircraft.yaml keeps it OFF)
+# and commands an aggressive low-altitude pitch-up the energy state cannot
+# sustain, so the angle of attack exceeds stall: the lift rolls over, drag rises,
+# the nose breaks, and the aircraft departs and sinks. The CBF safety filter is
+# OFF here to show the RAW plant stall (this is a plant-model demo, not a
+# recovery-controller demo -- designing a stall-recovery barrier is future work).
+#
+# Inspect the CL / dCL_stall / sink / alpha_deg columns of the trace:
+#   build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml \
+#       data/lon_stall_recovery.yaml stall_demo.csv
+#   python3 scripts/plot_lon_results.py stall_demo.csv
+# =============================================================================
+
+V_app: 16.0
+gamma_app_deg: 22.0    # commanded steep climb the thrust/energy cannot hold ->
+                       # the cascade pitches up until the wing stalls
+dt:    0.01
+t_max: 8.0             # capture the departure onset (stall + sink); past ~8 s the
+                       # un-recovered fall tumbles toward alpha>90deg where the
+                       # flat-plate table clamps (outside the model's valid range)
+cbf_enabled: false     # raw plant departure (no safety filter)
+
+stall:
+  enabled: true        # turn ON the viscous-stall overlay for this scenario
+  severity: 1.0
+
+initial:
+  h0:          60.0    # start high enough to watch the full departure + sink
+  dV:           0.0
+  dgamma_deg:   0.0
+  dtheta_deg:   0.0
+
+nominal:
+  T_set: 3.0                 # low thrust: cannot sustain the commanded climb
+  Kp_T:  4.0
+  Kd_T:  4.0
+  Kp_gamma: 2.0
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 32.0    # enough pitch authority to drive AoA past stall
+  Kp_theta: 1.0
+  Kq:       0.25

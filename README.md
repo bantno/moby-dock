@@ -87,6 +87,10 @@ nonlinear plant with no other change.
 - **Units:** model geometry is SI metres/seconds (Mach 0.059 = Vinf 20 / a forces
   m/s). The file's `Rho_=0.002377` is a stale imperial default and is ignored;
   air density comes from `aircraft.yaml` (default 1.225 kg/m³).
+- **Stall:** the inviscid `.stab` cannot stall (lift is linear to ±20°). An optional
+  NACA 4414 viscous-stall overlay (NeuralFoil-derived) splices a real post-stall lift
+  drop / drag rise / pitch break onto the deck — OFF by default, enabled via
+  `aircraft.yaml`'s `stall:` block. See `documentation/stall_model_spec.md`.
 
 ## TODO / backlog
 

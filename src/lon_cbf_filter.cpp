@@ -28,7 +28,7 @@ struct QRow {
   double rhs{0};
   bool hard{true};
   bool finite{true};
-  double slack_penalty{0};  // per-row penalty (default = cfg_.slack_penalty)
+  double slack_weight{0};  // per-row quadratic slack penalty w_i (soft rows only)
 };
 
 }  // namespace
@@ -48,19 +48,20 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
 
   // ---- Assemble the barrier rows -------------------------------------------
   std::vector<QRow> rows;
-  auto pushHocbf = [&](const HocbfRow& h, bool hard) {
+  auto pushHocbf = [&](const HocbfRow& h, bool hard, double slack_w) {
     QRow r;
     r.a = h.a;
     r.rhs = h.rhs;
     r.hard = hard;
     r.finite = std::isfinite(h.rhs) && std::isfinite(h.a(0, LDE)) &&
                std::isfinite(h.a(0, LTDDOT));
-    r.slack_penalty = cfg_.slack_penalty;
+    r.slack_weight = slack_w;  // ignored for hard rows (no slack column)
     rows.push_back(r);
   };
 
   if (cfg_.descent) {
-    const DescentBarrier b = makeDescentBarrier(aero, cfg_.v_safe, cfg_.CLmax, V);
+    const DescentBarrier b =
+        makeDescentBarrier(aero, cfg_.v_safe, cfg_.CLmax, V, cfg_.h_flare);
     // a_brk(V,gamma) is the available vertical braking acceleration. When it goes
     // non-positive (V at/below ~stall -- the airspeed barrier's regime) the
     // soft-landing envelope has no real braking solution. The barrier's smooth
@@ -75,21 +76,22 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_descent.begin(), cfg_.c_descent.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.descent_hard);
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.descent_hard, cfg_.w_slack_descent);
   }
   if (cfg_.airspeed) {
     AirspeedBarrier b{cfg_.Vmin};
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_airspeed.begin(), cfg_.c_airspeed.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_hard);
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_hard, cfg_.w_slack_airspeed);
   }
   if (cfg_.airspeed_upper) {
     AirspeedUpperBarrier b{cfg_.Vmax_air};
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_airspeed_upper.begin(), cfg_.c_airspeed_upper.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard);
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard,
+              cfg_.w_slack_airspeed_upper);
   }
   // Hydrodynamic impact-load barrier (degree-2 HOCBF; elevator-enforced). Gated
   // on (a) height for efficiency -- inactive above z_gate where Phi(z) ~ Nb -- and
@@ -106,16 +108,12 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     auto lie = barrierLie<2>(aero, b, X);  // relative degree 2 (elevator)
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_impact.begin(), cfg_.c_impact.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.impact_hard);
-    // Option C: height-scheduled slack penalty (cheap to relax aloft, firm near
-    // the surface) on this row only.
-    rows.back().slack_penalty =
-        cfg_.impact_slack_lo + (cfg_.impact_slack_hi - cfg_.impact_slack_lo) *
-                                   std::exp(-X[LH] / cfg_.zs);
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.impact_hard, cfg_.w_slack_impact);
   }
   if (cfg_.thrust_limits) {
-    pushHocbf(thrustMinRow(X, cfg_.c_thrust_min[0], cfg_.c_thrust_min[1]), true);
-    pushHocbf(thrustMaxRow(X, cfg_.Tmax, cfg_.c_thrust_max[0], cfg_.c_thrust_max[1]), true);
+    pushHocbf(thrustMinRow(X, cfg_.c_thrust_min[0], cfg_.c_thrust_min[1]), true, 0.0);
+    pushHocbf(thrustMaxRow(X, cfg_.Tmax, cfg_.c_thrust_max[0], cfg_.c_thrust_max[1]), true,
+              0.0);
   }
 
   // Row-assembly health: any barrier whose Lie row came out non-finite is dropped
@@ -149,19 +147,22 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
 
     Mat P = Mat::Zero(n, n);
     Vec q = Vec::Zero(n);
-    // Nominal tracking. In the best-effort solve this stays at its normal weight
-    // but is dominated by the hard-violation penalty below, so it only breaks
-    // ties among equally-safe controls (it never trades away safety).
-    P(LDE, LDE) = cfg_.w_de;
-    P(LTDDOT, LTDDOT) = cfg_.w_Tddot;
-    q[LDE] = -cfg_.w_de * U_nom[LDE];
-    q[LTDDOT] = -cfg_.w_Tddot * U_nom[LTDDOT];
+    // Control: identity-weighted tracking, 1/2 ||u - u_nom||^2 (regularizer only,
+    // no per-control weights). In the best-effort solve this is dominated by the
+    // hard-violation penalty below, so it only breaks ties among equally-safe
+    // controls (it never trades away safety).
+    P(LDE, LDE) = 1.0;
+    P(LTDDOT, LTDDOT) = 1.0;
+    q[LDE] = -U_nom[LDE];
+    q[LTDDOT] = -U_nom[LTDDOT];
+    // Soft constraints: per-constraint QUADRATIC slack penalty 1/2 w_i delta_i^2
+    // (P-term; q stays 0 on slacks). Larger w_i => firmer constraint. In the
+    // best-effort solve, hard rows get a slack at the dominant kBestEffortHardPenalty
+    // so the solution MINIMIZES their violation.
     for (int i = 0; i < nb; ++i)
-      if (slack_col[i] >= 0) {
-        const double pen = (best_effort && rows[i].hard) ? kBestEffortHardPenalty
-                                                         : rows[i].slack_penalty;
-        P(slack_col[i], slack_col[i]) = pen;
-      }
+      if (slack_col[i] >= 0)
+        P(slack_col[i], slack_col[i]) =
+            (best_effort && rows[i].hard) ? kBestEffortHardPenalty : rows[i].slack_weight;
 
     Mat A = Mat::Zero(m, n);
     Vec lo = Vec::Zero(m);
