@@ -39,6 +39,65 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-06-30 — Brian — Add NACA 4414 viscous-stall plant model
+**Branch/commit:** stall-model
+**What changed:** The longitudinal plant can now **stall**. The base deck
+(`AHAB_combined.stab`) is inviscid VSPAERO (lift linear to ±20°, no stall, and its
+post-stall values are meaningless), so above stall onset the plant **hands the lift off**
+from VSPAERO to a viscous + flat-plate post-stall curve via a blend:
+`C_plant = (1−w)·C_vspaero + w·C_post`. The blend weight `w(α)` smoothsteps 0→1 across the
+wing stall, so VSPAERO is **discarded** (weighted to zero) above onset. `C_post` is a
+**Viterna & Corrigan flat-plate extrapolation** (standard BEM post-stall method) anchored at
+the wing stall point, so the lift **craters off CLmax and declines to 0 at 90°** while drag
+rises to `CD_max ≈ 1.23`. The 4414 **2D viscous polar** (NeuralFoil, an Xfoil surrogate, Re
+~2.5×10⁵) sets the realistic CLmax level. New files: generators
+`scripts/{gen_4414_polar,precompute_stall_table}.py` → committed table
+`include/autoland/naca4414_stall_table.hpp` (`w/CLpost/CDpost/CMpost(α)` to 90°); lookup
+`include/autoland/stall_model.hpp` (`stallLookup`, value+slope, mirrors `clfLookup`); blend
+frozen in `makeAeroLocal` and applied in `LonDrift` (`src/lon_augmented.cpp`,
+`lon_augmented.hpp`). Config: `AircraftConfig::stall {enabled,severity}` (`config.{hpp,cpp}`,
+`aircraft.yaml`, default **OFF**), with an optional scenario-level `stall:` override
+(`lon_sim.cpp`). Diagnostics: CSV gains `CL,CD,dCL_stall`; `scripts/plot_stall_model.py` →
+`figures/stall_model_check.png`. Demo scenario `data/lon_stall_recovery.yaml`.
+**Why:** Stall-recovery control work needs a plant that actually stalls. The inviscid deck
+cannot — it lifts linearly forever — so there is nothing to recover from. VSPAERO's only
+"stall" option is a CLmax clamp (a plateau, not a departure), and its inviscid lift past stall
+is fiction; we need the real lift crater + drag rise + pitch break, with VSPAERO thrown out
+above onset.
+**Design choices:**
+- **Blend, not additive deltas.** `(1−w)·C_vspaero + w·C_post` discards VSPAERO above onset
+  (the user's point: VSPAERO doesn't model stall at all, so blending *toward* its post-stall
+  values is wrong). An earlier additive `ΔCL = CL_vspaero·(f−1)` formulation was scrapped: it
+  kept multiplying the (fictional) rising inviscid lift, and the deep-stall tail plateaued
+  instead of cratering.
+- **Viterna flat-plate tail.** Standard post-stall extrapolation: lift follows `sin 2α` to 0 at
+  90°, drag → `CD_max = 1.11+0.018·AR`. Replaces the non-physical plateau; deep stall now
+  craters.
+- **Frozen-affine, shared plant+CBF.** Lives in `makeAeroLocal`, frozen as local-affine
+  `{off + slope·α}` for `w` and each post-coefficient, so it reuses the exact-Lie path; the
+  plant re-freezes each RK4 substep. `w=0` in attached flow ⇒ the CBF is untouched.
+- **Stall point is a tunable knob, not truth.** NeuralFoil→Xfoil→reality is weakest at low-Re
+  post-stall; onset/level are generator knobs (`A_STALL_DEG`, `BLEND_HALF_DEG`, `SEVERITY`).
+  Defaults: CLmax ≈ **1.44 @ 11°** (≤ the 2D section CLmax 1.46), → 0.80 by 45°, 0 at 90°.
+- **OFF by default**, the disabled `LonDrift` path runs zero extra ops. Valid to ~90° α (table
+  clamps above; a tumble past 90° is outside the model).
+**Verified:** Nominal approach **bit-identical** stall on vs off (`max|Δh|=max|Δδe|=0`,
+`dCL_stall≡0`, max α≈2°). 5 new `[stall]` tests pass (lookup inert/held/interp; post-stall
+lift-decline-to-zero + drag-rise; blend hands CL/CD to the Viterna values and cuts lift).
+End-to-end `lon_stall_recovery` departs: climbs to CLmax≈1.42 @ α≈11°, then lift craters
+(0.90 @ 28°, 0.45 @ 69°, 0 @ 97°), CD→1.23, sink builds to ~10 m/s. Full suite: only the
+**pre-existing** `#19` fails (missing `AHAB_sweep.stab`, unrelated).
+**Follow-ups / notes for collaborator:** calibrate onset/level vs experimental low-Re 4414 or
+flight ID; optional 2nd table axis over Re; optional Goman–Krabrov separation **state** for
+dynamic-stall lag (doubles as a CBF state); wire an α-margin recovery barrier; optionally link
+the descent barrier's `CL_max` knob to the plant CLmax (~1.44). CSV gained 3 columns —
+name-keyed plot scripts unaffected.
+**Files touched:** `include/autoland/{naca4414_stall_table,stall_model,lon_augmented,config}.hpp`,
+`src/{lon_augmented,config,lon_sim}.cpp`, `scripts/{gen_4414_polar,precompute_stall_table,
+plot_stall_model}.py`, `data/{aircraft.yaml,lon_stall_recovery.yaml,naca4414_polar.csv}`,
+`test/test_stall_model.cpp`, `CMakeLists.txt`,
+`documentation/{stall_model_spec,water_landing_cbf_design,CHANGELOG}.md`, `README.md`, `TODO.md`.
+
 ## 2026-06-28 — Brian — Add hydrodynamic impact-load HOCBF barrier (NACA TN 1516)
 **Branch/commit:** water-impact-cbf
 **What changed:** New independent CBF-QP row that bounds the **peak CG load factor at

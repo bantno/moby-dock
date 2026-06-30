@@ -44,12 +44,24 @@ struct SurfaceLimits {
   double dT_min{0.0}, dT_max{1.0};    // throttle bounds [-]
 };
 
+// Viscous-stall plant model. The inviscid VSPAero deck cannot stall; when
+// enabled, makeAeroLocal overlays the precomputed NACA 4414 stall deltas
+// (DCL/DCD/DCM, stall_model.hpp) so the plant gains a real post-stall lift drop,
+// drag rise and pitch break. OFF by default => bit-identical to the inviscid
+// deck. `severity` scales the deltas (1 = as-generated). See
+// documentation/stall_model_spec.md.
+struct StallParams {
+  bool enabled{false};
+  double severity{1.0};
+};
+
 struct AircraftConfig {
   InertiaParams inertia;
   CGOffset cg;
   ThrustParams thrust;
   Environment env;
   SurfaceLimits limits;
+  StallParams stall;
 
   // Extra parasite drag (body-x) representing viscous + hull drag that the
   // INVISCID VSPAero panel solution omits. Applied as a constant body-x drag

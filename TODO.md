@@ -59,6 +59,17 @@ Optional per item: `(owner)` and a one-line note.
       approach trim — harmless, since the controller has feedback).
 - [ ] **Compute `C_L,max`** for the airframe. `a_brk(V,gamma)` uses a placeholder `CL_max = 1.2`
       (config). Needs a real value (CFD/wind-tunnel/flight); also the max-lift drag it implies.
+      *Note:* the new viscous-stall plant model gives a vehicle CLmax ≈ **1.44** (NeuralFoil 4414,
+      `documentation/stall_model_spec.md`) — a better default than 1.2; the descent barrier's
+      `CL_max` knob is **not** auto-linked to it, so update it if you want them consistent.
+- [ ] **Calibrate / extend the viscous-stall plant model** (`stall-model`). Onset/level are
+      tunable knobs, not experiment (NeuralFoil→Xfoil→reality is weakest at low-Re post-stall).
+      Calibrate `A_STALL_DEG`/`BLEND_HALF_DEG`/`SEVERITY` in `scripts/precompute_stall_table.py`
+      against experimental low-Re 4414 data or flight ID. Follow-ups: a 2nd table axis over Re
+      (deck spans 1.5–4×10⁵ in `naca4414_polar.csv`); extend the flat-plate tail past 90°
+      (currently clamped) for full tumble; an optional **Goman–Krabrov** separation state for
+      dynamic-stall lag/hysteresis (doubles as a CBF state); and an α-margin **stall-recovery
+      barrier** (the motivating downstream work).
 - [ ] **Calibrate `V_max`** (over-speed barrier ceiling). Currently a placeholder `27` m/s
       (~1.5·V_app) in `lon_scenario.yaml`. Set to the real never-exceed / structural / hull-slam
       speed limit.

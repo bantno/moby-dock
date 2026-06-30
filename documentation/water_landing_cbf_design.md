@@ -161,7 +161,9 @@ As of `2b610a3`, the model uses **real AHAB vehicle data**, not placeholders:
   `zcp = 0.15 m`; `parasite_CD0 = 0.030`. (Thrust `k_v` and `parasite_CD0` still uncalibrated.)
 - `data/AHAB_combined.stab`: real combined VSPAero aero deck. This is now the **default** deck
   for `lon_autoland_sim` (the old `example.stab` placeholder is kept only for the unit tests;
-  removing it is a backlog item).
+  removing it is a backlog item). The deck is **inviscid** (lift linear to ±20°, no stall); an
+  optional NACA 4414 viscous-stall overlay can be enabled on top of it — see below and
+  `stall_model_spec.md`.
 - `data/lon_scenario.yaml`: powered approach `T_set = 2.0 N`, `V_app = 18`, `γ = −3°`,
   `v_safe = 0.1`, `CL_max = 1.2` (placeholder, drives `a_brk(V,γ)`), `Vmin = 13.5`,
   `V_max = 27` (placeholder over-speed ceiling, ~1.5·V_app; non-binding on this approach), `Tmax = 50`,
@@ -203,6 +205,13 @@ Folded from the 2026-06-25 implementation notes (`archive/`), updated for curren
    noise, instantaneous elevator (no actuator lag).
 10. **§3.3 deferred ⇒ "hull-safe" is incomplete.** `v_safe` is a flat constant and touchdown
     attitude is unconstrained; real slamming load is attitude-dependent.
+11. **Optional viscous stall (plant).** An optional NACA 4414 stall overlay (NeuralFoil-derived,
+    `stall_model_spec.md`) gives the otherwise-stall-free inviscid deck a real post-stall lift
+    drop / drag rise / pitch break. OFF by default (nominal behaviour bit-identical). Its onset
+    and depth are **tunable engineering values, not experiment-validated** (NeuralFoil→Xfoil→
+    reality is weakest at low-Re post-stall), and it is frozen local-affine like the rest of the
+    aero (item 3). It is shared into the CBF path, so the self-consistent-plant property (item 1)
+    still holds when it is enabled. Designing a stall-recovery barrier on top is future work.
 
 ## 9. Open questions / follow-ups
 
