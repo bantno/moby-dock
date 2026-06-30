@@ -155,6 +155,67 @@ struct AirspeedUpperBarrier {  // b = Vmax(h) - V
   }
 };
 
+// Energy-reachability upper barrier (anti-bounce). SPECIFIC mechanical energy
+// e = E/m = 1/2 V^2 + g h. With thrust idle, e only dissipates via drag, at rate
+// de/dh = -(D/m) / sin(gamma) along the descent, so the most specific energy that
+// can still be shed before touchdown is ~ (dmax / |sin gamma|) * h, where the
+// specific drag decel dmax = D/m. Requiring the current specific energy to stay
+// within that dissipation budget of the landing target e_land = 1/2 V_land^2:
+//   b = [e_land + (dmax / |sin gamma|) h] - (1/2 V^2 + g h) >= 0,
+// which tightens to V <= V_land at h = 0 (bounding touchdown speed) and is
+// permissive aloft (budget term large). This is the ENERGY ANALOG of the descent
+// barrier's kinematic envelope. We use SPECIFIC (per-mass) energy so the barrier is
+// O(100) m^2/s^2 rather than O(1000) J, which otherwise mis-tunes the class-K /
+// slack weights vs the O(1) airspeed/descent barriers and drives QP chatter.
+// dmax = (rho V^2 S / 2m) CDmaxlift with CDmaxlift FROZEN at the max-lift condition
+// (exactly like a_brk's drag term), so b depends only on (V, gamma, h) -- never
+// theta/T -- and stays relative degree 3. |sin gamma| gets a smooth floor
+// sg = sqrt(sin^2 + eps_sg^2) to cap the gamma -> 0 singularity AND keep the
+// series/series divide's denominator bounded away from 0 for the Taylor jet (eps_sg
+// is load-bearing, not just physical). Unlike the descent barrier the only sqrt is
+// sg > 0, so NO radicand floor is needed. Build via makeEnergyBarrier() so CDmaxlift
+// is filled in. Mirrors DescentBarrier.
+struct EnergyBarrier {
+  double e_land{0};                          // 1/2 V_land^2 (target touchdown specific KE)
+  double rho{0}, Sref{0}, mass{0}, g{0};     // environment / geometry
+  double CDmaxlift{0};                       // frozen max-lift drag coefficient
+  double eps_sg{0.02};                       // smooth floor on |sin gamma|
+  // Fraction of the ideal max-drag dissipation budget actually credited (eta in
+  // (0,1]). The reachability budget (dmax/|sin gamma|) h assumes flying at full
+  // max-lift drag for the whole remaining descent; you won't, so discounting it
+  // makes b smaller aloft => the barrier binds EARLIER (higher up), starting the
+  // speed-bleed sooner with more altitude to do it gently. 1.0 = original budget.
+  double budget_frac{1.0};
+  template <class T>
+  T operator()(const std::array<T, NXA>& X) const {
+    using std::sin;
+    using std::sqrt;
+    const T V = X[LV], gam = X[LGAM], h = X[LH];
+    const T dmax = (0.5 * rho * Sref * CDmaxlift / mass) * (V * V);  // >= 0 [m/s^2]
+    const T sg = sqrt(sin(gam) * sin(gam) + (eps_sg * eps_sg));      // |sin gamma| floored
+    const T e = (0.5) * (V * V) + g * h;                            // specific energy
+    return (e_land + budget_frac * ((dmax / sg) * h)) - e;  // dmax/sg is series/series
+  }
+};
+
+// Build the energy barrier from frozen aero + config, filling in the max-lift drag
+// coefficient at V (reusing cdAtMaxLift, as the descent barrier does). budget_frac
+// (eta) discounts the dissipation budget so the barrier engages earlier (default 1).
+inline EnergyBarrier makeEnergyBarrier(const AeroLocal& a, double V_land,
+                                       double CLmax, double V, double eps_sg,
+                                       double budget_frac = 1.0) {
+  EnergyBarrier b;
+  b.e_land = 0.5 * V_land * V_land;
+  b.rho = a.rho;
+  b.Sref = a.Sref;
+  b.mass = a.mass;
+  b.g = a.g;
+  b.CDmaxlift = cdAtMaxLift(a, CLmax, V);
+  b.eps_sg = eps_sg;
+  b.budget_frac = budget_frac;
+  return b;
+}
+
 // --- Lie-derivative bundle for a relative-degree-R barrier --------------------
 template <int R>
 struct BarrierLie {

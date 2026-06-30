@@ -317,6 +317,15 @@ TEST_CASE("drift Lie stack matches a finite-difference flow oracle", "[lon_cbf]"
     const auto lie = barrierLie<3>(a, b, X);
     checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
   }
+
+  SECTION("energy barrier") {
+    // The key correctness gate for the energy-reachability barrier: the series/
+    // series Dmax/|sin gamma| divide and the gamma/h coupling must reproduce the
+    // finite-difference drift stack (catches any relative-degree-3 surprise).
+    const EnergyBarrier b = makeEnergyBarrier(a, 12.0, 1.2, V, 0.02);
+    const auto lie = barrierLie<3>(a, b, X);
+    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  }
 }
 
 // The upper airspeed barrier b = Vmax - V is the sign-flip of the lower
@@ -381,6 +390,77 @@ TEST_CASE("lon filter enforces the upper airspeed barrier when hard", "[lon_cbf]
   HocbfRow row = hocbfRow(Lf, lie.LgLf,
                           {cfg.c_airspeed_upper[0], cfg.c_airspeed_upper[1],
                            cfg.c_airspeed_upper[2]});
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
+}
+
+// =============================================================================
+// Energy-reachability upper (anti-bounce) barrier.
+// =============================================================================
+
+// b = [E_land + (Dmax/|sin gamma|) h] - (1/2 m V^2 + m g h) matches its closed
+// form aloft, and at h=0 reduces to the touchdown-speed bound b >= 0 <=> V <= V_land.
+TEST_CASE("energy barrier value and touchdown-speed bound", "[lon_cbf]") {
+  Setup s;
+  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
+  const double alpha = theta - gamma;
+  const double V_land = 12.0, eps_sg = 0.02, CLmax = 1.2;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
+  const EnergyBarrier b = makeEnergyBarrier(a, V_land, CLmax, V, eps_sg);
+
+  // (1) Value matches the closed form at an aloft state (h = 30). SPECIFIC energy:
+  // e = 1/2 V^2 + g h, dmax = (rho Sref CDml / 2m) V^2, e_land = 1/2 V_land^2.
+  LonStateVec X;
+  X << 30.0, V, gamma, theta, 0.3, 5.0, 1.0;
+  const double CDml = cdAtMaxLift(a, CLmax, V);
+  const double dmax = 0.5 * a.rho * a.Sref * CDml / a.mass * V * V;
+  const double sg = std::sqrt(std::sin(gamma) * std::sin(gamma) + eps_sg * eps_sg);
+  const double e = 0.5 * V * V + a.g * 30.0;
+  const double e_land = 0.5 * V_land * V_land;
+  const double expect = (e_land + (dmax / sg) * 30.0) - e;
+  CHECK(b(toArray(X)) == Approx(expect).epsilon(1e-12));
+
+  // (2) At h = 0 the budget term vanishes -> b = 1/2 (V_land^2 - V^2):
+  // zero at V = V_land, negative above, positive below.
+  LonStateVec X0 = X; X0[LH] = 0.0;
+  LonStateVec Xat = X0;   Xat[LV] = V_land;
+  CHECK(b(toArray(Xat)) == Approx(0.0).margin(1e-9));
+  LonStateVec Xhot = X0;  Xhot[LV] = V_land + 2.0;
+  CHECK(b(toArray(Xhot)) < 0.0);
+  LonStateVec Xslow = X0; Xslow[LV] = V_land - 2.0;
+  CHECK(b(toArray(Xslow)) > 0.0);
+}
+
+// With the energy barrier hard and a low V_land, an energy-adding nominal
+// (nose-down + max thrust) must be corrected so the assembled HOCBF row holds.
+TEST_CASE("lon filter enforces the energy barrier when hard", "[lon_cbf]") {
+  Setup s;
+  LonCBFConfig cfg;
+  cfg.descent = false;          // isolate the energy barrier
+  cfg.airspeed = false;
+  cfg.thrust_limits = false;
+  cfg.airspeed_upper = false;
+  cfg.impact = false;
+  cfg.energy = true;
+  cfg.energy_hard = true;
+  cfg.V_land = 12.0;            // low target; the state is well above -> active
+  LonCBFFilter filter(cfg);
+
+  LonStateVec X;
+  X << 3.0, 16.0, -3.0 * kDeg, -1.0 * kDeg, 0.0, 5.0, 0.0;  // low + fast -> hot
+  LonCtrlVec Un;
+  Un << -0.3, 500.0;            // unsafe: nose-down + slam thrust (add energy)
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);  // the energy-adding command was corrected
+
+  const AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, X[LV], X[LTH] - X[LGAM]);
+  const EnergyBarrier b = makeEnergyBarrier(a, cfg.V_land, cfg.CLmax, X[LV], cfg.eps_sg);
+  auto lie = barrierLie<3>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf,
+                          {cfg.c_energy[0], cfg.c_energy[1], cfg.c_energy[2]});
   const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
   CHECK(lhs <= row.rhs + 1e-6);
 }

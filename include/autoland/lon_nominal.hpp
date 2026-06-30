@@ -33,6 +33,13 @@ struct LonNominalConfig {
   // segment (original constant-gamma behavior).
   double gamma_ref2{-0.03};  // segment-2 flight-path angle [rad] (below h_switch)
   double h_switch{0.0};      // glideslope transition altitude [m]
+  // Flare / hold-off. Below h_flare the flight-path reference ramps from the
+  // glideslope toward gamma_flare (a level / slightly climbing hold-off) as h -> 0,
+  // so the cascade pitches the nose up into a high-alpha float that arrests sink AND
+  // bleeds airspeed before contact -- using the otherwise-idle elevator authority.
+  // h_flare <= 0 => no flare (straight glideslope to contact, original behavior).
+  double h_flare{0.0};       // flare engage height AGL [m]
+  double gamma_flare{0.0};   // flight-path target at touchdown during flare [rad]
 };
 
 class LonNominal {
@@ -46,7 +53,14 @@ class LonNominal {
     U[LTDDOT] = c_.Kp_T * (c_.T_set - X[LT]) - c_.Kd_T * X[LTDOT];
 
     // Piecewise glideslope: segment-1 angle aloft, segment-2 below the switch.
-    const double gamma_ref = (X[LH] > c_.h_switch) ? c_.gamma_ref : c_.gamma_ref2;
+    double gamma_ref = (X[LH] > c_.h_switch) ? c_.gamma_ref : c_.gamma_ref2;
+    // Flare / hold-off: below h_flare, ramp the reference from the glideslope toward
+    // gamma_flare as h -> 0 (s = h/h_flare goes 1 -> 0). The PI then drives gamma up,
+    // pitching to a high-alpha float that washes off airspeed before touchdown.
+    if (c_.h_flare > 0.0 && X[LH] < c_.h_flare) {
+      const double s = std::max(0.0, std::min(1.0, X[LH] / c_.h_flare));
+      gamma_ref = c_.gamma_flare + (gamma_ref - c_.gamma_flare) * s;
+    }
     gamma_ref_ = gamma_ref;
 
     // Flight-path-angle outer loop -> attitude command (PI, anti-windup clamp).

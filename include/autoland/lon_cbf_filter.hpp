@@ -28,10 +28,12 @@ struct LonCBFConfig {
   bool airspeed_upper{true};
   bool thrust_limits{true};
   bool impact{true};
+  bool energy{true};      // energy-reachability upper (anti-bounce) barrier
   bool descent_hard{true};
   bool airspeed_hard{false};
   bool airspeed_upper_hard{false};
   bool impact_hard{false};
+  bool energy_hard{false};  // soft by default (competes with the hard descent barrier)
 
   double v_safe{0.6};     // hull-safe touchdown sink rate [m/s]
   double a_brk{3.0};      // [DEPRECATED] constant braking accel. The descent
@@ -55,9 +57,24 @@ struct LonCBFConfig {
   double v_sched_h{5.0};      // airspeed-schedule scale height [m]
   double Tmax{12.0};      // max thrust [N]
 
+  // --- Energy-reachability upper barrier (anti-bounce) -----------------------
+  // b = [E_land + (Dmax/|sin gamma|) h] - (1/2 m V^2 + m g h), E_land = 1/2 m V_land^2.
+  // Bounds touchdown speed to V_land via a drag dissipation budget; the energy
+  // analog of the descent barrier. Replaces the altitude-scheduled upper-airspeed
+  // ceiling for anti-bounce. See hocbf.hpp EnergyBarrier.
+  double V_land{12.0};        // target max touchdown airspeed [m/s] (primary knob)
+  double eps_sg{0.02};        // smooth floor on |sin gamma| (gamma->0 / divide guard)
+  double energy_budget_frac{1.0};  // eta in (0,1]: discount the dissipation budget so the
+                                   // energy barrier engages earlier/higher (1 = original)
+  // Stall-barrier height gate: the lower airspeed floor V >= Vmin is enforced only
+  // ABOVE this height, so the aircraft may stall in the final stall_gate_h metres
+  // ("OK to stall just before touchdown"). 0 => always enforce (no near-ground stall).
+  double stall_gate_h{3.0};   // [m]
+
   std::array<double, 3> c_descent{2.0, 2.0, 2.0};   // class-K gains (deg 3)
   std::array<double, 3> c_airspeed{2.0, 2.0, 2.0};
   std::array<double, 3> c_airspeed_upper{2.0, 2.0, 2.0};
+  std::array<double, 3> c_energy{2.0, 2.0, 2.0};    // energy barrier (deg 3)
   std::array<double, 2> c_thrust_min{4.0, 4.0};     // {c11, c12} (deg 2)
   std::array<double, 2> c_thrust_max{4.0, 4.0};     // {c21, c22}
 
@@ -89,6 +106,7 @@ struct LonCBFConfig {
   double w_slack_airspeed{1.0e4};
   double w_slack_airspeed_upper{1.0e4};
   double w_slack_impact{1.0e4};
+  double w_slack_energy{1.0e4};
 
   double de_min{-0.5}, de_max{0.5};            // elevator bounds [rad]
   double Tddot_min{-500.0}, Tddot_max{500.0};  // Tddot bounds [N/s^2]

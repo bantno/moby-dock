@@ -43,20 +43,28 @@ nominal:
   Ki_gamma: 0.5
   theta_cmd_max_deg: 25.0
   Kp_theta: 1.0       # theta -> delta_e (PD); scaled ~/8 from 6.0 for the real
-  Kq:       0.25      # 
+  Kq:       0.11      # pitch-rate damping; lowered 0.25->0.11 (sweep: less chatter)
+  # Flare / hold-off: below h_flare, ramp gamma_ref from the glideslope toward
+  # gamma_flare as h->0, pitching the nose up into a high-alpha float that bleeds
+  # airspeed before touchdown (uses the otherwise-idle elevator authority).
+  h_flare:         5.0   # flare engage height AGL [m] (0 = no flare)
+  gamma_flare_deg: 0.0   # flight-path target at touchdown during flare [deg] (0 = level)
 
 # --- CBF safety filter --------------------------------------------------------
 cbf:
   enabled:        true
   descent:        true
   airspeed:       true
-  airspeed_upper: true
+  airspeed_upper: true   # constant Vmax over-speed cap (pre-energy CBF set)
   thrust_limits:  true
   impact:         true   # hydrodynamic impact-load barrier (NACA TN 1516)
+  energy:         false  # REVERTED: disabled -- back to the pre-energy-CBF set; the
+                         # nominal flare (above) now does the speed management instead
   descent_hard:   true
   airspeed_hard:  false
   airspeed_upper_hard: false
   impact_hard:    false  # soft by default (Option C height-scheduled slack)
+  energy_hard:    false  # soft (competes with the hard descent barrier near touchdown)
 
   v_safe: 0.1          # hull-safe touchdown sink rate [m/s]
   a_brk:  3.0         # [DEPRECATED] constant braking accel; a_brk is now
@@ -75,7 +83,7 @@ cbf:
   # speed. 27 (~1.5 V_app) is generous: protective but non-binding on this
   # nominal approach (which flies ~18 m/s and only slows), so the trajectory is
   # unchanged; lower it to see the upper airspeed barrier actively cap V.
-  V_max:  25.0
+  V_max:  20.0
 
   # --- Altitude-scheduled airspeed limits --------------------------------------
   # Vmin/V_max above are the ALOFT limits; near the surface the floor and ceiling
@@ -95,6 +103,31 @@ cbf:
                        # the water, ~95% within 15 m; rest of the approach is aloft.
 
   Tmax:   50.0         # max thrust [N] (T_static)
+
+  # --- Energy-reachability upper barrier (anti-bounce) -------------------------
+  # b = [E_land + (Dmax/|sin gamma|) h] - (1/2 m V^2 + m g h),  E_land = 1/2 m V_land^2.
+  # Bounds touchdown SPEED to V_land via a drag energy-dissipation budget -- the
+  # energy analog of the descent barrier. Replaces the altitude-scheduled upper
+  # airspeed ceiling (which porpoised): tightens to V_land at h=0, permissive aloft,
+  # engages early/gently. Soft by default. (The Vmin_ground/Vmax_*/v_sched_h schedule
+  # keys above are now INERT -- both airspeed barriers are constant; kept for ref.)
+  V_land:       10.0   # target max touchdown airspeed [m/s] (PRIMARY knob). Near stall
+                       # (~10.6) -> some lift margin to still flare (5 was infeasible:
+                       # half-stall = no lift = hard slam). Consistent w/ height-gated stall.
+  eps_sg:       0.15   # smooth floor on |sin gamma| (gamma->0 / Taylor-divide guard).
+                       # Raised from 0.02: 1/sg ~ 6.7 instead of 50, taming the near-
+                       # level-flight (gamma~0) transients that spiked psi/elevator.
+  energy_budget_frac: 1.0  # eta in (0,1]: discount the max-drag dissipation budget so the
+                           # energy barrier engages EARLIER/higher (smaller = sooner). 1 = orig.
+  c_energy:     [1.0, 1.0, 1.0]   # class-K gains (deg 3). Softened 2->1 (sweep: the
+                                  # dominant chatter fix; energy barrier yields gently)
+  w_slack_energy: 1.0e2  # softened from 1e4: the (now specific, O(100)) energy barrier
+                         # is soft and should yield to the hard descent barrier
+
+  # Stall-barrier height gate: enforce the V >= Vmin floor only ABOVE this height,
+  # so the aircraft may stall in the final few metres ("ok to stall near landing").
+  stall_gate_h: 0.0    # [m] ungated (pre-energy behavior: stall floor always enforced).
+                       # Raise to ~3 to let the flare stall just before touchdown.  (0 => always enforce the stall floor)
 
   # --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) ---
   # Bounds the peak CG load factor at water touchdown: b = (n_limit - n_peak) +
@@ -117,9 +150,10 @@ cbf:
                                   # (s+1)(s+2)(s+32): robust gentle noisy touchdown
                                   # (Monte-Carlo over 40 seeds: mean 0.52, worst 1.17
                                   # m/s; see results/cbf_gain_montecarlo_summary.md)
-  c_descent:     [1.0, 1.0, 1.0]
+  c_descent:     [2.0, 2.0, 2.0]   # sweep winner w/ energy barrier (0.14 m/s ideal,
+                                   # hard barrier safe). Was [1,4,38] (pre-energy best).
   c_airspeed:       [2., 2., 2.]
-  c_airspeed_upper: [2., 2., 2.]
+  c_airspeed_upper: [0.1, 2., 2.]
   c_thrust_min: [6.0, 6.0]
   c_thrust_max: [6.0, 6.0]
   c_impact:     [2.0, 2.0]         # impact-load barrier class-K gains (degree 2)
@@ -129,10 +163,10 @@ cbf:
   # firmer (large enough => enforced exactly when feasible). Only SOFT barriers use
   # these; HARD ones (*_hard flags, thrust limits) carry no slack. descent_hard is
   # true here so w_slack_descent is inactive unless you soften it.
-  w_slack_descent:        10000.0
-  w_slack_airspeed:       10000.0
-  w_slack_airspeed_upper: 10000.0
-  w_slack_impact:         10000.0
+  w_slack_descent:        1.0
+  w_slack_airspeed:       1.0
+  w_slack_airspeed_upper: 1.0
+  w_slack_impact:         1.0
 
   de_min_deg: -28.6
   de_max_deg:  28.6

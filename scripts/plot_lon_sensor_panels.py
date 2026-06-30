@@ -138,6 +138,7 @@ bars = {
     "descent": filt["b_descent"],
     "airspeed (V-Vmin)": filt["b_airspeed"],
     "airspeed upper (Vmax-V)": filt["b_airspeed_upper"],
+    "energy (anti-bounce)": filt["b_energy"],
     "thrust min (T)": filt["T"],
     "thrust max (Tmax-T)": Tmax - filt["T"],
     "impact": filt["b_impact"],

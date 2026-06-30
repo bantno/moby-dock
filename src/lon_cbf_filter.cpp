@@ -77,19 +77,32 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     const std::vector<double> c(cfg_.c_descent.begin(), cfg_.c_descent.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.descent_hard, cfg_.w_slack_descent);
   }
-  if (cfg_.airspeed) {
-    AirspeedBarrier b{cfg_.Vmin, cfg_.Vmin_ground, cfg_.v_sched_h};
+  // Stall floor V >= Vmin is height-GATED: enforced only ABOVE stall_gate_h, so the
+  // aircraft may stall in the final few metres ("OK to stall just before touchdown").
+  if (cfg_.airspeed && X[LH] > cfg_.stall_gate_h) {
+    AirspeedBarrier b{cfg_.Vmin};  // simple constant floor b = V - Vmin (no altitude schedule)
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_airspeed.begin(), cfg_.c_airspeed.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_hard, cfg_.w_slack_airspeed);
   }
   if (cfg_.airspeed_upper) {
-    AirspeedUpperBarrier b{cfg_.Vmax_air, cfg_.Vmax_ground, cfg_.v_sched_h};
+    AirspeedUpperBarrier b{cfg_.Vmax_air};  // simple constant ceiling b = Vmax - V (no altitude schedule)
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_airspeed_upper.begin(), cfg_.c_airspeed_upper.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard, cfg_.w_slack_airspeed_upper);
+  }
+  if (cfg_.energy) {
+    // Energy-reachability upper (anti-bounce) barrier: bound touchdown speed to
+    // V_land via the drag dissipation budget. Degree 3 (V/gamma/h only, CDmaxlift
+    // frozen) -> same machinery as the airspeed barriers. Soft by default.
+    const EnergyBarrier b = makeEnergyBarrier(aero, cfg_.V_land, cfg_.CLmax, V,
+                                              cfg_.eps_sg, cfg_.energy_budget_frac);
+    auto lie = barrierLie<3>(aero, b, X);
+    std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+    const std::vector<double> c(cfg_.c_energy.begin(), cfg_.c_energy.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.energy_hard, cfg_.w_slack_energy);
   }
   // Hydrodynamic impact-load barrier (degree-2 HOCBF; elevator-enforced). Gated
   // on (a) height for efficiency -- inactive above z_gate where Phi(z) ~ Nb -- and
