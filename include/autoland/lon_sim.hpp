@@ -6,6 +6,7 @@
 #include "autoland/lon_cbf_filter.hpp"
 #include "autoland/lon_nominal.hpp"
 #include "autoland/mixing.hpp"
+#include "autoland/wind_gust.hpp"
 
 // =============================================================================
 // Self-consistent augmented-longitudinal landing simulation: the plant IS the
@@ -20,6 +21,7 @@ namespace autoland {
 struct LonScenario {
   LonNominalConfig nominal;
   LonCBFConfig cbf;
+  DiscreteGustConfig wind;  // MIL-F-8785C discrete gust, plant-side only
   LonStateVec X0{LonStateVec::Zero()};
   double dt{0.01};
   double t_max{60.0};
@@ -52,5 +54,21 @@ class LonSim {
 LonStateVec lonXdotFull(const AeroTable& table, const Mixing& mixing,
                         const AircraftConfig& cfg, const LonStateVec& X,
                         const LonCtrlVec& U);
+
+// Wind-perturbed plant RHS. The state keeps its air-relative meaning (V =
+// airspeed, gamma = air-path angle, so alpha = theta - gamma is still the true
+// aerodynamic AoA); the earth-frame gust W = (u tailwind+, w updraft+) enters
+// exactly, via
+//   hdot     += W.w                                     (kinematic transport)
+//   Vdot     += -( Wdot.u cos(gamma) + Wdot.w sin(gamma) )
+//   gammadot += ( Wdot.u sin(gamma) - Wdot.w cos(gamma) ) / V
+// i.e. the -m Wdot inertial forcing of m d(v_air)/dt = F - m Wdot projected on
+// the air-path axes. A steady wind (Wdot = 0) therefore only transports the
+// aircraft; only the gust RAMP forces V/gamma -- the classic airspeed loss in
+// a tailwind ramp and the AoA rise in an updraft ramp.
+LonStateVec lonXdotFullWind(const AeroTable& table, const Mixing& mixing,
+                            const AircraftConfig& cfg, const LonStateVec& X,
+                            const LonCtrlVec& U, const GustWind& W,
+                            const GustWind& Wdot);
 
 }  // namespace autoland

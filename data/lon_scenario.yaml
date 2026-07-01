@@ -24,6 +24,21 @@ initial:
   dgamma_deg:   0.0   # gamma0 = gamma_app + dgamma
   dtheta_deg:   0.0   # theta0 = theta_trim + dtheta
 
+# --- Discrete wind gust (MIL-F-8785C "1-cosine"; Simulink Discrete Wind Gust
+# Model equivalent). PLANT disturbance only -- the nominal controller and the
+# CBF-QP keep the still-air model, so an enabled gust tests the safety filter
+# against unmeasured wind. Per axis: V_wind = Vm/2 (1 - cos(pi x/dm)) over the
+# penetration distance x, with xdot = V (airspeed) after t_start. Earth frame,
+# h-up: u_amp > 0 = tailwind, w_amp > 0 = updraft (a MIL body-frame w_g,
+# positive down, is the negation of w_amp).
+wind:
+  enabled: false
+  t_start: 5.0        # gust onset [s]
+  u_amp:  -3.0        # horizontal gust amplitude Vm [m/s] (negative = headwind)
+  u_len: 120.0        # horizontal gust length dm [m]
+  w_amp:   0.0        # vertical gust amplitude Vm [m/s] (negative = downdraft)
+  w_len: 120.0        # vertical gust length dm [m]
+
 # --- Nominal controller -------------------------------------------------------
 nominal:
   T_set: 2.0           # [N] powered approach: carry thrust so there's airspeed

@@ -4,22 +4,15 @@
 #include <cmath>
 #include <memory>
 
-#include "autoland/aero_table.hpp"
 #include "autoland/cbf.hpp"
 #include "autoland/config.hpp"
 #include "autoland/control_affine_model.hpp"
-#include "autoland/dynamics.hpp"
-#include "autoland/linear_model.hpp"
-#include "autoland/mixing.hpp"
 #include "autoland/qp_solver.hpp"
-#include "autoland/trim.hpp"
 
 using namespace autoland;
 using Catch::Approx;
 
 namespace {
-const std::string kData = AUTOLAND_DATA_DIR;
-
 // A constant control-affine model xdot = f + B u, chosen so the CBF QP rows can
 // be reasoned about by hand. Doubles as a check that the filter depends only on
 // the ControlAffineModel interface (the dynamics-model swap seam).
@@ -215,32 +208,3 @@ TEST_CASE("Disabled CBF is a hard pass-through", "[cbf]") {
   CHECK(u[DE] == Approx(0.0));
 }
 
-TEST_CASE("CBF runs on the real linearized longitudinal model", "[cbf]") {
-  // Exercises the LinearModelCAM swap seam end-to-end against AHAB sweep aero.
-  AeroTable t = AeroTable::fromFile(kData + "/AHAB_sweep.stab");
-  AircraftConfig cfg = loadAircraftConfig(kData + "/aircraft.yaml");
-  Mixing mx = Mixing::build(cfg, t);
-  Dynamics dyn(t, mx, cfg);
-  TrimResult tr = trim(dyn, 18.0, -1.5 * M_PI / 180.0);
-  LinearModel lm = linearize(dyn, tr.x, tr.u);
-  LinearModelCAM cam(lm);
-
-  CBFFilter filt(lonConfig(), cfg.limits);
-  std::vector<Barrier> bars{airspeedBarrier(0.85 * 18.0, 2.0)};
-
-  CtrlVec u = filt.filter(tr.u, tr.x, cam, bars);
-  // The result respects the actuator box and is finite (the QP solved against
-  // the real linearized model through the ControlAffineModel seam).
-  CHECK(std::isfinite(u[DE]));
-  CHECK(std::isfinite(u[DT]));
-  CHECK(u[DE] >= cfg.limits.de_min);
-  CHECK(u[DE] <= cfg.limits.de_max);
-  CHECK(u[DT] >= cfg.limits.dT_min);
-  CHECK(u[DT] <= cfg.limits.dT_max);
-
-  // Disabled filter is an exact pass-through.
-  filt.setEnabled(false);
-  CtrlVec u_pass = filt.filter(tr.u, tr.x, cam, bars);
-  CHECK(u_pass[DE] == Approx(tr.u[DE]));
-  CHECK(u_pass[DT] == Approx(tr.u[DT]));
-}

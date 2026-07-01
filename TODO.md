@@ -100,6 +100,9 @@ barrier exists for.
       flare *can't* save it (steeper γ, higher `V_app`, gust/shear injection, degraded/disabled
       descent barrier) and confirm the impact row actually becomes the active constraint and
       holds `n_peak ≤ n_limit`. Until then "it works" is indistinguishable from "it's off."
+      *Gust injection is now available*: MIL-F-8785C discrete gust (`wind_gust.hpp`, scenario
+      `wind:` block), plant-only/unmeasured — the demo downdraft already blows through the
+      V_td_max energy cap, so the sweep has its forcing lever.
 - [ ] **Validity gate leaves the worst case unprotected.** The row is assembled only while
       descending with positive trim (NACA TN 1516's valid domain), so a nose-down / high-sink
       botched approach — plausibly the highest-load case — gets *no* protection. The hard on/off

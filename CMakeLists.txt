@@ -150,6 +150,7 @@ add_executable(unit_tests
   test/test_lon_cbf.cpp
   test/test_lie_derivatives.cpp
   test/test_stall_model.cpp
+  test/test_wind_gust.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)

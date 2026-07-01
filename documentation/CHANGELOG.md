@@ -39,6 +39,35 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-01 — Brian — MIL-F-8785C discrete wind gust model ("1-cosine")
+**Branch/commit:** stall-recovery-cbf
+**What changed:** Added the MIL-F-8785C discrete gust — the Simulink Aerospace Blockset
+"Discrete Wind Gust Model" block — as a plant-side disturbance for the longitudinal sim
+(`include/autoland/wind_gust.hpp`, header-only). Per axis V_wind = Vm/2·(1−cos(πx/dm)) over
+penetration distance x, with ẋ = V (airspeed) gated on `t_start`, exactly like the block's
+airspeed-integrator input; dm ≤ 0 degenerates to a step gust. Two axes in the vertical plane,
+**earth frame, h-up**: `u_amp` + = tailwind, `w_amp` + = updraft (a MIL body-frame w_g, positive
+down, is the negation). Plumbed into `lon_sim`: new `lonXdotFullWind` keeps the state air-relative
+(V, γ air-path ⇒ α = θ−γ stays the true AoA) and adds the exact wind terms — ḣ += W_h (kinematic
+transport) and the −Ẇ inertial forcing projected on path axes (steady wind only transports; only
+the gust *ramp* forces V/γ). x_gust is integrated jointly with X in RK4. **The nominal controller
+and CBF-QP keep the still-air model** — a gust run probes the filter against unmeasured wind (the
+TODO's "gust/shear injection"). YAML `wind:` block in `lon_scenario.yaml` (disabled by default;
+wind-off runs keep the old rk4 path, bit-identical). CSV gains `W_u,W_h,x_gust` columns; the
+`sink` column is now the *true inertial* −ḣ (= air-relative sink + W_h; unchanged wind-off).
+**Why:** Robustness testing of the recovery-CBF set demands a standard, citable gust disturbance.
+**Follow-ups / notes for collaborator:** Demo (tailwind 3 m/s + downdraft 1.5 m/s at t=20 s,
+dm=120 m, `figures/gust_demo_compare.png`): touchdown 31.3 s @ sink 1.27 m/s / V 15.45 m/s vs
+still-air 68.5 s @ 0.21 m/s / 13.37 m/s — V_td cap EXCEEDED because the filter can't see the wind.
+Wind-aware barrier margins (ISSf/tightened class-K) are the natural next step. MIL-8785C ties
+(Vm, dm) to turbulence intensity/scale; here they're free signed parameters like the block's.
+Removed the deprecated `test_cbf.cpp` case "CBF runs on the real linearized longitudinal model"
+(it exercised the old body-axis LinearModelCAM seam against `data/AHAB_sweep.stab`, a file no
+longer in the repo, so it could never run); full suite now 46/46 green.
+**Files touched:** `include/autoland/wind_gust.hpp` (new), `include/autoland/lon_sim.hpp`,
+`src/lon_sim.cpp`, `test/test_wind_gust.cpp` (new), `test/test_cbf.cpp`, `CMakeLists.txt`,
+`data/lon_scenario.yaml`, `figures/gust_demo_compare.png`.
+
 ## 2026-07-01 — Brian — Recovery-set CBFs: impact + stall(AoA) + nose-up + total-energy
 **Branch/commit:** stall-recovery-cbf
 **What changed:** Replaced the CBF-QP barrier set. **Removed** the descent-rate, lower-airspeed,

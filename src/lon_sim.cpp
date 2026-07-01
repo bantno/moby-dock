@@ -47,6 +47,18 @@ LonStateVec lonXdotFull(const AeroTable& table, const Mixing& mixing,
   return lonXdot(a, X, U);
 }
 
+LonStateVec lonXdotFullWind(const AeroTable& table, const Mixing& mixing,
+                            const AircraftConfig& cfg, const LonStateVec& X,
+                            const LonCtrlVec& U, const GustWind& W,
+                            const GustWind& Wdot) {
+  LonStateVec xd = lonXdotFull(table, mixing, cfg, X, U);
+  const double sg = std::sin(X[LGAM]), cg = std::cos(X[LGAM]);
+  xd[LH] += W.w;
+  xd[LV] += -(Wdot.u * cg + Wdot.w * sg);
+  xd[LGAM] += (Wdot.u * sg - Wdot.w * cg) / X[LV];
+  return xd;
+}
+
 namespace {
 LonStateVec rk4(const AeroTable& t, const Mixing& mx, const AircraftConfig& cfg,
                 const LonStateVec& X, const LonCtrlVec& U, double dt) {
@@ -55,6 +67,35 @@ LonStateVec rk4(const AeroTable& t, const Mixing& mx, const AircraftConfig& cfg,
   const LonStateVec k3 = lonXdotFull(t, mx, cfg, X + 0.5 * dt * k2, U);
   const LonStateVec k4 = lonXdotFull(t, mx, cfg, X + dt * k3, U);
   return X + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+}
+
+// RK4 step of the wind-augmented system [X; x_gust]. The gust penetration
+// distance x_gust is a genuine state (xdot = V after onset, like the Simulink
+// block's airspeed integrator), so it is integrated jointly with X rather than
+// held over the step. t is the step start time (gates the onset within
+// substeps).
+struct WindStep {
+  LonStateVec X;
+  double xg;
+};
+
+WindStep rk4Wind(const AeroTable& tab, const Mixing& mx, const AircraftConfig& cfg,
+                 const DiscreteGustConfig& g, double t, const LonStateVec& X,
+                 double xg, const LonCtrlVec& U, double dt) {
+  auto deriv = [&](double tl, const LonStateVec& Xl, double xgl, LonStateVec& xd,
+                   double& xgd) {
+    xgd = gustXdot(g, tl, Xl[LV]);
+    xd = lonXdotFullWind(tab, mx, cfg, Xl, U, gustWind(g, xgl),
+                         gustWindRate(g, xgl, xgd));
+  };
+  LonStateVec k1, k2, k3, k4;
+  double x1, x2, x3, x4;
+  deriv(t, X, xg, k1, x1);
+  deriv(t + 0.5 * dt, X + 0.5 * dt * k1, xg + 0.5 * dt * x1, k2, x2);
+  deriv(t + 0.5 * dt, X + 0.5 * dt * k2, xg + 0.5 * dt * x2, k3, x3);
+  deriv(t + dt, X + dt * k3, xg + dt * x3, k4, x4);
+  return {X + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4),
+          xg + (dt / 6.0) * (x1 + 2.0 * x2 + 2.0 * x3 + x4)};
 }
 
 // Steady-flight longitudinal trim of the lon model itself: solve for
@@ -196,6 +237,18 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
     ac_.stall.severity = getOr(yst, "severity", ac_.stall.severity);
   }
 
+  // --- MIL-F-8785C discrete wind gust ("1-cosine"), plant disturbance only.
+  // The nominal controller and the CBF-QP keep the still-air model, so an
+  // enabled gust probes the filter's robustness to unmeasured wind.
+  YAML::Node yw = root["wind"];
+  DiscreteGustConfig& wd = sc_.wind;
+  wd.enabled = getOrB(yw, "enabled", false);
+  wd.t_start = getOr(yw, "t_start", 0.0);
+  wd.u.amp = getOr(yw, "u_amp", 0.0);
+  wd.u.len = getOr(yw, "u_len", 120.0);
+  wd.w.amp = getOr(yw, "w_amp", 0.0);
+  wd.w.len = getOr(yw, "w_len", 120.0);
+
   sc_.dt = getOr(root, "dt", 0.01);
   sc_.t_max = getOr(root, "t_max", 60.0);
 
@@ -237,6 +290,9 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
       sc_.cbf.h_lpf_tau > 0.0 ? dt / (sc_.cbf.h_lpf_tau + dt) : 1.0;
   double h_filt = sc_.X0[LH];
 
+  // Gust penetration distance [m] (MIL-F-8785C discrete gust; 0 until onset).
+  double x_gust = 0.0;
+
   std::ofstream csv(csv_path);
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
          "de_nom,Tddot_nom,theta_cmd_deg,recovered,"
@@ -245,7 +301,7 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
          "b_energy,psi1_energy,psi2_energy,psi3_energy,res_energy,"
          "res_tmin,res_tmax,"
          "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp,h_meas,h_filt,"
-         "n_rows_dropped,hard_dropped,CL,CD,dCL_stall\n";
+         "n_rows_dropped,hard_dropped,CL,CD,dCL_stall,W_u,W_h,x_gust\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -281,7 +337,10 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     if (hard_dropped) ++steps_hard_dropped;
 
     const double alpha = X[LTH] - X[LGAM];
-    const double sink = -X[LV] * std::sin(X[LGAM]);  // positive down
+    // True inertial descent rate -hdot (positive down): air-relative sink plus
+    // the vertical gust transport. Identical to -V sin(gamma) with wind off.
+    const GustWind Wg = gustWind(sc_.wind, x_gust);
+    const double sink = -(X[LV] * std::sin(X[LGAM]) + Wg.w);
     const auto xa = toArray(X);
 
     // HOCBF nested functions psi_1, psi_2 (linear class-K): the true safe-set
@@ -391,20 +450,35 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         << res_tl << ',' << res_tu << ','
         << bimp(xa) << ',' << n_peak << ',' << kappa_l << ',' << psi1i << ',' << psi2i
         << ',' << res_i << ',' << h_meas << ',' << h_filt << ',' << n_rows_dropped << ','
-        << (hard_dropped ? 1 : 0) << ',' << CL_d << ',' << CD_d << ',' << dCL_stall << '\n';
+        << (hard_dropped ? 1 : 0) << ',' << CL_d << ',' << CD_d << ',' << dCL_stall << ','
+        << Wg.u << ',' << Wg.w << ',' << x_gust << '\n';
 
     if (X[LH] <= 0.0 && k > 0) {
       td.reached = true;
       td.t = t; td.sink = sink; td.V = X[LV]; td.theta = X[LTH]; td.gamma = X[LGAM];
       break;
     }
-    X = rk4(table_, *mixing_, ac_, X, U, dt);
+    if (sc_.wind.enabled) {
+      const WindStep ws = rk4Wind(table_, *mixing_, ac_, sc_.wind, t, X, x_gust, U, dt);
+      X = ws.X;
+      x_gust = ws.xg;
+    } else {
+      // Still-air path kept separate so wind-off runs are bit-identical to the
+      // pre-gust plant (mirrors the stall_on pattern).
+      X = rk4(table_, *mixing_, ac_, X, U, dt);
+    }
     t += dt;
   }
 
   std::cout << "=== Augmented longitudinal landing ===\n";
   std::cout << "trim theta_cmd seed, T_set=" << sc_.nominal.T_set << " N, gamma_ref="
             << sc_.nominal.gamma_ref / kDeg << " deg\n";
+  if (sc_.wind.enabled) {
+    std::cout << "  MIL-F-8785C discrete gust (plant-only, unmeasured): t_start="
+              << sc_.wind.t_start << " s  u: Vm=" << sc_.wind.u.amp << " m/s dm="
+              << sc_.wind.u.len << " m (+tailwind)  w: Vm=" << sc_.wind.w.amp
+              << " m/s dm=" << sc_.wind.w.len << " m (+updraft)\n";
+  }
   if (td.reached) {
     std::cout << "TOUCHDOWN  t=" << td.t << " s  sink=" << td.sink << " m/s"
               << "  V=" << td.V << " m/s  theta=" << td.theta / kDeg << " deg\n";
