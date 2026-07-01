@@ -14,44 +14,48 @@
 //
 //   U* = argmin 1/2 ||U - U_nom||_W^2   s.t.  the HOCBF + actuator rows
 //
-// Barriers: descent-rate (deg 3), airspeed (deg 3), min/max thrust (deg 2).
-// The contact-force barrier (section 3.3) is intentionally deferred. The QP is
-// solved with OSQP; hard rows are honored first, and if that set is infeasible
-// the filter recovers by softening every row for that step.
+// Barriers: impact-load (deg 2, the only HARD safety row), stall/AoA (deg 2),
+// nose-up attitude floor (deg 2, gated near the surface), total-energy ceiling
+// (deg 3), and min/max thrust actuator guards (deg 2, HARD). There is NO airspeed
+// floor -- the AoA barrier guards stall directly; the thrust CBFs are the
+// actuator-effectiveness / HOCBF-validity guards. The QP is solved with OSQP; the
+// hard rows are honored first, and if that set is infeasible the filter falls back
+// to a best-effort minimum-violation solve.
 // =============================================================================
 namespace autoland {
 
 struct LonCBFConfig {
   bool enabled{true};
-  bool descent{true};
-  bool airspeed{true};
-  bool airspeed_upper{true};
   bool thrust_limits{true};
   bool impact{true};
-  bool descent_hard{true};
-  bool airspeed_hard{false};
-  bool airspeed_upper_hard{false};
-  bool impact_hard{false};
+  bool stall{true};
+  bool noseup{true};
+  bool energy{true};
+  bool impact_hard{true};    // impact is the only hard SAFETY-envelope barrier
+  bool stall_hard{false};    // stall / nose-up / energy are all SOFT (slacked)
+  bool noseup_hard{false};
+  bool energy_hard{false};
 
-  double v_safe{0.6};     // hull-safe touchdown sink rate [m/s]
-  double h_flare{0.0};    // flare height [m]: the descent barrier levels the sink
-                          // toward v_safe at h = h_flare instead of at the surface
-                          // (a knob on where the flare begins). 0 => flare at h=0.
-                          // IMPLEMENTED but needs tuning -- see TODO / CHANGELOG.
-  double a_brk{3.0};      // [DEPRECATED] constant braking accel. The descent
-                          // barrier now computes a_brk(V,gamma) from CLmax; this
-                          // is kept only for logging / plot-script compatibility.
-  double CLmax{1.2};      // max lift coeff (stall ceiling) for a_brk(V,gamma).
-                          // PLACEHOLDER -- calibrate to the real airframe.
-  double Vmin{15.0};      // stall-margin airspeed [m/s]
-  double Vmax_air{30.0};  // never-exceed airspeed [m/s] for the upper airspeed
-                          // barrier (over-speed / high-energy impact). NOTE: this
-                          // is airspeed -- distinct from Tmax (thrust). PLACEHOLDER.
+  // Stall / nose-up / energy-corridor parameters. Angles stored in RADIANS (the
+  // YAML gives degrees). The AoA barrier replaces the old airspeed floor as the
+  // stall guard; there is deliberately NO airspeed-floor CBF (see class doc).
+  double alpha_stall{11.0 * M_PI / 180.0};  // NACA-4414 wing-stall AoA [rad]
+  double stall_margin{2.0 * M_PI / 180.0};  // AoA buffer below stall [rad]
+  double theta_min{3.0 * M_PI / 180.0};     // nose-up attitude floor [rad]
+                                            // (keep >= tau_keel for impact validity)
+  double h_noseup{3.0};   // nose-up barrier active only below this height [m]
+  double V_td_max{14.0};  // never-exceed touchdown airspeed [m/s]; E_cap(0) =
+                          // 1/2 V_td_max^2. From the hull/structural limit
+                          // (~1.4 V_stall), NOT the approach speed.
+  double g_eff{16.0};     // energy-ceiling loosening rate [m/s^2]. LOOSE cap:
+                          //   V <= sqrt(V_td_max^2 + 2(g_eff-g)h).
+                          // Size so E_cap(h0) >= E0 (starts satisfied):
+                          //   g_eff >= g + (V0^2 - V_td_max^2)/(2 h0).
   double Tmax{12.0};      // max thrust [N]
 
-  std::array<double, 3> c_descent{2.0, 2.0, 2.0};   // class-K gains (deg 3)
-  std::array<double, 3> c_airspeed{2.0, 2.0, 2.0};
-  std::array<double, 3> c_airspeed_upper{2.0, 2.0, 2.0};
+  std::array<double, 2> c_stall{4.0, 4.0};          // class-K gains (deg 2)
+  std::array<double, 2> c_noseup{2.0, 2.0};         // (deg 2, gated near surface)
+  std::array<double, 3> c_energy{2.0, 2.0, 2.0};    // (deg 3)
   std::array<double, 2> c_thrust_min{4.0, 4.0};     // {c11, c12} (deg 2)
   std::array<double, 2> c_thrust_max{4.0, 4.0};     // {c21, c22}
 
@@ -79,10 +83,10 @@ struct LonCBFConfig {
   // feasible steps, firing best-effort spuriously.) HARD barriers (the *_hard
   // flags, and the thrust-limit rows) get NO slack; if the hard set is infeasible
   // the filter falls back to a best-effort minimum-violation solve.
-  double w_slack_descent{1.0e4};
-  double w_slack_airspeed{1.0e4};
-  double w_slack_airspeed_upper{1.0e4};
-  double w_slack_impact{1.0e4};
+  double w_slack_stall{1.0e5};   // firmest soft row (protect the stall recovery)
+  double w_slack_energy{1.0e4};  // medium
+  double w_slack_noseup{1.0e3};  // softest: yields to stall on the shared elevator
+  double w_slack_impact{1.0e4};  // unused while impact_hard=true; kept for testing
 
   double de_min{-0.5}, de_max{0.5};            // elevator bounds [rad]
   double Tddot_min{-500.0}, Tddot_max{500.0};  // Tddot bounds [N/s^2]
@@ -128,11 +132,8 @@ class LonCBFFilter {
   //                            dropped from the QP (coeffs zeroed, rhs -> +inf).
   //   lastHardDropped()      : at least one dropped row was a HARD constraint --
   //                            an unannunciated loss of a safety guarantee.
-  //   lastDescentInfeasible(): a_brk(V,gamma) <= 0 -- the soft-landing envelope
-  //                            had no real braking solution (root-cause signal).
   int lastDroppedRows() const { return dropped_rows_; }
   bool lastHardDropped() const { return hard_dropped_; }
-  bool lastDescentInfeasible() const { return descent_infeasible_; }
   const LonCBFConfig& config() const { return cfg_; }
 
  private:
@@ -141,7 +142,6 @@ class LonCBFFilter {
   mutable bool recovered_{false};
   mutable int dropped_rows_{0};
   mutable bool hard_dropped_{false};
-  mutable bool descent_infeasible_{false};
 };
 
 }  // namespace autoland

@@ -39,6 +39,49 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-01 — Brian — Recovery-set CBFs: impact + stall(AoA) + nose-up + total-energy
+**Branch/commit:** stall-recovery-cbf
+**What changed:** Replaced the CBF-QP barrier set. **Removed** the descent-rate, lower-airspeed,
+and upper-airspeed barriers (structs, config, YAML, wiring, CSV diagnostics, tests). **Kept** the
+hydrodynamic impact-load barrier — now the *only* hard safety row (`impact_hard` default flipped to
+true) — and the min/max-thrust actuator barriers (kept hard, reframed as the actuator-effectiveness
+/ HOCBF-validity guards: every elevator-driven barrier's control coefficient scales with dynamic
+pressure ∝ρV², so the thrust guards preserve the relative-degree structure). There is deliberately
+**no airspeed-floor CBF** — the AoA barrier handles stall directly. **Added** three barriers, all
+soft (slacked), with priority impact(hard) > stall > energy > nose-up encoded by slack weights
+1e5 > 1e4 > 1e3:
+- `StallBarrier` b = α_lim − (θ−γ), α_lim = α_stall − margin (rel. deg 2, elevator). The stall
+  guard; as α→α_lim the HOCBF drives the elevator nose-down — the pilot low-altitude stall recovery.
+- `NoseUpBarrier` b = θ − θ_min, gated to the final `h_noseup` metres (rel. deg 2). Holds θ above
+  the keel so the impact model's τ=θ−τ_keel>0 gate stays valid and the touchdown is nose-up; lowest
+  weight → yields to the stall guard on the shared elevator.
+- `EnergyBarrier` b = ½(V_td_max²−V²) + (g_eff−g)h (rel. deg 3, both controls). A **loose
+  never-exceed** total-specific-energy ceiling ⇔ descending airspeed cap
+  V ≤ √(V_td_max²+2(g_eff−g)h); bounds touchdown speed. `V_td_max` is the hull/structural touchdown
+  limit; `g_eff` sized so the ceiling starts satisfied. A *constant* energy cap is useless here (PE→KE
+  makes a glider arrive fast), hence the height schedule.
+All three are functions of *instantaneous* state only, so the set is **glide-path agnostic** — no
+barrier code change when the nominal later switches to the exponential-altitude flare.
+**Why:** Recover the pilot behavior at a low-altitude stall (pitch down + full elevator): the impact
+CBF regulates vertical touchdown rate, the energy CBF bounds horizontal/kinetic energy at touchdown,
+and the AoA barrier prevents stall while keeping the impact model valid.
+**Verification:** clean approach lands soft nose-up (sink 0.21 m/s, θ=+3°, V=13.4 < cap), impact
+(hard) satisfied throughout, 0 hard rows dropped. Feasible tight touchdown (`V_td_max=10`) → 0.03 m/s
+at V=11, θ=+7.3° (guard protective, α peaks 7.4°). The guard only *binds* and forces a hard nose-down
+landing when a **sub-stall** touchdown speed is demanded (`V_td_max=9` < V_stall≈9.7 → 3.18 m/s, α
+pinned <9°, i.e. no actual stall) — the honest insufficient-margin tradeoff. Operating rule:
+`V_td_max ≳ 1.1·V_stall` (~11) for a soft landing. `ctest` 42/43 (the 1 failure is **pre-existing**:
+legacy `test_cbf.cpp` needs missing `data/AHAB_sweep.stab`). Rewrote `test/test_lon_cbf.cpp`: closed
+forms, relative degrees, finite-difference flow-oracle drift stacks, and hard-enforcement for all
+three new barriers.
+**Follow-ups / notes for collaborator:** the nominal is still the constant-γ cascade (no flare yet),
+so the current soft touchdown comes from the impact barrier flaring near the water; when the
+exponential-altitude nominal lands, retune only `V_td_max`/`g_eff`/`theta_min`. `water_landing_cbf_math.md`
+is updated for the new set; `water_landing_cbf_design.md` still describes the old barriers — not yet updated.
+**Files touched:** `include/autoland/{hocbf,lon_cbf_filter,impact_barrier}.hpp`,
+`src/{lon_cbf_filter,lon_sim}.cpp`, `data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`scripts/{harness,plot_lon_results,plot_lon_zoom,plot_gain_compare,plot_lon_sensor_panels}.py`
+
 ## 2026-06-30 — Brian — Add NACA 4414 viscous-stall plant model
 **Branch/commit:** stall-model
 **What changed:** The longitudinal plant can now **stall**. The base deck

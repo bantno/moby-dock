@@ -39,7 +39,6 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
   recovered_ = false;
   dropped_rows_ = 0;
   hard_dropped_ = false;
-  descent_infeasible_ = false;
   if (!cfg_.enabled) return U_nom;
 
   const double V = X[LV];
@@ -59,39 +58,30 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     rows.push_back(r);
   };
 
-  if (cfg_.descent) {
-    const DescentBarrier b =
-        makeDescentBarrier(aero, cfg_.v_safe, cfg_.CLmax, V, cfg_.h_flare);
-    // a_brk(V,gamma) is the available vertical braking acceleration. When it goes
-    // non-positive (V at/below ~stall -- the airspeed barrier's regime) the
-    // soft-landing envelope has no real braking solution. The barrier's smooth
-    // radicand floor (DescentBarrier::eps_r) keeps b finite so the row stays in
-    // the QP, but the guarantee is no longer physically achievable -- flag it as
-    // a per-call signal (counted/surfaced by the sim) instead of a once-only warn.
-    const double abrk = (0.5 * b.rho * b.Sref / b.mass) * V * V *
-                            (b.CLmax * std::cos(X[LGAM]) -
-                             b.CDmaxlift * std::sin(X[LGAM])) -
-                        b.g;
-    descent_infeasible_ = (abrk <= 0.0);
-    auto lie = barrierLie<3>(aero, b, X);
+  if (cfg_.stall) {
+    const StallBarrier b = makeStallBarrier(cfg_.alpha_stall, cfg_.stall_margin);
+    auto lie = barrierLie<2>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
-    const std::vector<double> c(cfg_.c_descent.begin(), cfg_.c_descent.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.descent_hard, cfg_.w_slack_descent);
+    const std::vector<double> c(cfg_.c_stall.begin(), cfg_.c_stall.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.stall_hard, cfg_.w_slack_stall);
   }
-  if (cfg_.airspeed) {
-    AirspeedBarrier b{cfg_.Vmin};
+  if (cfg_.energy) {
+    const EnergyBarrier b = makeEnergyBarrier(aero, cfg_.V_td_max, cfg_.g_eff);
     auto lie = barrierLie<3>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
-    const std::vector<double> c(cfg_.c_airspeed.begin(), cfg_.c_airspeed.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_hard, cfg_.w_slack_airspeed);
+    const std::vector<double> c(cfg_.c_energy.begin(), cfg_.c_energy.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.energy_hard, cfg_.w_slack_energy);
   }
-  if (cfg_.airspeed_upper) {
-    AirspeedUpperBarrier b{cfg_.Vmax_air};
-    auto lie = barrierLie<3>(aero, b, X);
+  // Nose-up attitude floor, gated to the final h_noseup metres (mirrors the impact
+  // z-gate below). Keeps theta above tau_keel so the impact model stays valid and
+  // the touchdown is nose-up; SOFT with the lowest weight, so it yields to the
+  // stall guard on the shared elevator (the recovery behavior).
+  if (cfg_.noseup && X[LH] < cfg_.h_noseup) {
+    const NoseUpBarrier b = makeNoseUpBarrier(cfg_.theta_min);
+    auto lie = barrierLie<2>(aero, b, X);
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
-    const std::vector<double> c(cfg_.c_airspeed_upper.begin(), cfg_.c_airspeed_upper.end());
-    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.airspeed_upper_hard,
-              cfg_.w_slack_airspeed_upper);
+    const std::vector<double> c(cfg_.c_noseup.begin(), cfg_.c_noseup.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.noseup_hard, cfg_.w_slack_noseup);
   }
   // Hydrodynamic impact-load barrier (degree-2 HOCBF; elevator-enforced). Gated
   // on (a) height for efficiency -- inactive above z_gate where Phi(z) ~ Nb -- and

@@ -81,126 +81,51 @@ std::array<double, 4> lieDriftOracle(const AeroLocal& a, const Barrier& b,
 }
 }  // namespace
 
-// The augmented EOM's first Lie derivatives must reproduce the raw drift: e.g.
-// L_f b_V = Vdot (the airspeed equation), since b_V = V - Vmin.
-TEST_CASE("L_f b_V equals the airspeed equation", "[lon_cbf]") {
+// The recovery-set barriers reduce to their literal definitions, and their exact
+// Lie stacks have the relative degree the wiring assumes: stall / nose-up are
+// degree 2 (elevator only, thrust column ~0); energy is degree 3 (BOTH controls,
+// since thrust reaches airspeed only through the T,Tdot,Tddot chain).
+TEST_CASE("recovery barriers: closed form + relative degree", "[lon_cbf]") {
   Setup s;
   const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
+  const double q = 0.3, alpha = theta - gamma;
   AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-
   LonStateVec X;
-  X << 30.0, V, gamma, theta, 0.0, 5.0, 0.0;
-  AirspeedBarrier bv{0.85 * V};
-  auto lie = barrierLie<3>(a, bv, X);
-
+  X << 30.0, V, gamma, theta, q, 5.0, 1.0;  // nonzero q, T, Tdot
   const LonStateVec xd = lonXdot(a, X, LonCtrlVec::Zero());
-  CHECK(lie.Lf[1] == Approx(xd[LV]).epsilon(1e-9));  // L_f b_V == Vdot
-  CHECK(lie.Lf[0] == Approx(V - 0.85 * V).epsilon(1e-12));
-}
 
-// The descent barrier now uses the speed/path-angle-dependent braking accel
-//   a_brk(V,gamma) = (rho V^2 S / 2m)[CLmax cos g - CDmaxlift sin g] - g,
-// built by makeDescentBarrier(). Check the barrier value matches that formula
-// exactly (catches a constant-a_brk regression or a sign/term error) and that
-// a_brk is positive (and not the old constant 3.0) at a normal approach state.
-TEST_CASE("descent barrier uses speed-dependent a_brk(V,gamma)", "[lon_cbf]") {
-  Setup s;
-  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
-  const double CLmax = 1.2, v_safe = 0.6;
-  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-
-  LonStateVec X;
-  X << 30.0, V, gamma, theta, 0.0, 5.0, 0.0;
-  const DescentBarrier b = makeDescentBarrier(a, v_safe, CLmax, V);
-
-  const double CDml = cdAtMaxLift(a, CLmax, V);
-  const double abrk = (0.5 * a.rho * a.Sref / a.mass) * V * V *
-                          (CLmax * std::cos(gamma) - CDml * std::sin(gamma)) - a.g;
-  // The barrier floors the radicand with the smooth positive map eps_r (so it can
-  // never go NaN); mirror it here. At this safe state (h=30) the floor is a ~1e-9
-  // bias, but reproducing it keeps the exact-match tolerance meaningful.
-  const double arg = v_safe * v_safe + 2.0 * abrk * X[LH];
-  const double arg_pos =
-      0.5 * (arg + std::sqrt(arg * arg + 4.0 * b.eps_r * b.eps_r));
-  const double b_expected = V * std::sin(gamma) + std::sqrt(arg_pos);
-
-  CHECK(b(toArray(X)) == Approx(b_expected).epsilon(1e-12));
-  CHECK(abrk > 0.0);                            // real braking authority
-  CHECK(abrk != Approx(3.0).epsilon(1e-3));     // tracks dynamic pressure, not const
-}
-
-// Airspeed control authority (the coefficients of U in the 3rd derivative) must
-// match the closed form in documentation/water_landing_cbf_math.md section 3.2.
-// (The descent barrier now uses the speed-dependent a_brk(V,gamma), which has no
-// simple closed form; it is covered by the a_brk-formula + flow-oracle tests.)
-//
-// NOTE: the doc's ELEVATOR authority models the aero as L(alpha,V), D(alpha,V)
-// only -- it omits the aerodynamic pitch-RATE dependence (dCL/dqhat, dCD/dqhat).
-// Our autodiff differentiates the full tabulated aero, so it matches the doc
-// exactly only in the no-rate-aero limit (dQ = 0). The THRUST authority has no
-// aero term and matches with full aero. The separate test below records that
-// full aero diverges from the doc (the engine is the more complete quantity).
-TEST_CASE("airspeed control authority matches the doc closed form", "[lon_cbf]") {
-  Setup s;
-  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
-  const double T = 5.0, q = 0.3;  // nonzero q to exercise the explicit-q terms
-  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-  // No-rate-aero idealization matching the doc's L(alpha,V), D(alpha,V) model.
-  a.dQ_CFx = 0.0; a.dQ_CFz = 0.0; a.dQ_CMy = 0.0;
-
-  const double m = s.cfg.inertia.mass, Iyy = s.cfg.inertia.Iyy;
-  const double Sref = s.table.Sref(), cref = s.table.Cref();
-  const double qbar = 0.5 * s.cfg.env.rho * V * V;
-  const double mach = V / s.cfg.env.a_sound, qhat = q * cref / (2.0 * V);
-
-  // File-frame body coeffs and rotated drag slope at this state.
-  const double CFx = a.off_CFx + a.dAlpha_CFx * alpha + a.dMach_CFx * mach + a.dQ_CFx * qhat;
-  const double CFz = a.off_CFz + a.dAlpha_CFz * alpha + a.dMach_CFz * mach + a.dQ_CFz * qhat;
-  const double dCD_da = a.dAlpha_CFx * std::cos(alpha) - CFx * std::sin(alpha) +
-                        a.dAlpha_CFz * std::sin(alpha) + CFz * std::cos(alpha);
-  const double dD_da = qbar * Sref * dCD_da;
-  const double Cmde_factor = qbar * Sref * cref / Iyy;  // (rho V^2 S cbar / 2 Iyy)
-  const double Cmde = a.dDe_CMy;
-
-  LonStateVec X;
-  X << 30.0, V, gamma, theta, q, T, 0.0;
-
-  SECTION("airspeed barrier") {
-    AirspeedBarrier b{0.85 * V};
-    auto lie = barrierLie<3>(a, b, X);
-    // Thrust authority = cos(alpha)/m
-    CHECK(lie.LgLf(0, LTDDOT) == Approx(std::cos(alpha) / m).epsilon(1e-7));
-    // Elevator authority = -(1/m)(T sin a + dD/da) * factor * Cmde
-    const double elev = -(1.0 / m) * (T * std::sin(alpha) + dD_da) * Cmde_factor * Cmde;
-    CHECK(lie.LgLf(0, LDE) == Approx(elev).epsilon(1e-7));
+  SECTION("stall (deg 2, elevator only)") {
+    const double alpha_stall = 11.0 * kDeg, margin = 2.0 * kDeg;
+    const StallBarrier b = makeStallBarrier(alpha_stall, margin);
+    CHECK(b(toArray(X)) == Approx((alpha_stall - margin) - alpha).epsilon(1e-12));
+    auto lie = barrierLie<2>(a, b, X);
+    // d/dt[alpha_lim - (theta - gamma)] = -thetadot + gammadot = -q + gammadot.
+    CHECK(lie.Lf[1] == Approx(-q + xd[LGAM]).epsilon(1e-9));
+    CHECK(std::abs(lie.LgLf(0, LTDDOT)) < 1e-9);  // thrust absent at degree 2
+    CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);     // elevator has authority
   }
-}
-
-// Records the finding: with the FULL tabulated aero (pitch-rate derivatives
-// retained), the elevator authority differs from the doc's reduced closed form,
-// while the thrust authority still matches exactly.
-TEST_CASE("full aero elevator authority diverges from the doc", "[lon_cbf]") {
-  Setup s;
-  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
-  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-  REQUIRE(a.dQ_CMy != 0.0);  // the model really does have pitch-rate aero
-
-  LonStateVec X;
-  X << 30.0, V, gamma, theta, 0.3, 5.0, 0.0;
-  AirspeedBarrier b{0.85 * V};
-  auto lie = barrierLie<3>(a, b, X);
-
-  // Thrust authority is aero-free -> still exactly cos(alpha)/m.
-  CHECK(lie.LgLf(0, LTDDOT) == Approx(std::cos(alpha) / s.cfg.inertia.mass).epsilon(1e-7));
-
-  // Elevator authority vs the doc's reduced form: a real, non-tiny gap.
-  AeroLocal a0 = a; a0.dQ_CFx = 0; a0.dQ_CFz = 0; a0.dQ_CMy = 0;
-  auto lie0 = barrierLie<3>(a0, b, X);
-  CHECK(lie.LgLf(0, LDE) != Approx(lie0.LgLf(0, LDE)).epsilon(1e-3));
+  SECTION("nose-up (deg 2, elevator only)") {
+    const double theta_min = 3.0 * kDeg;
+    const NoseUpBarrier b = makeNoseUpBarrier(theta_min);
+    CHECK(b(toArray(X)) == Approx(theta - theta_min).epsilon(1e-12));
+    auto lie = barrierLie<2>(a, b, X);
+    CHECK(lie.Lf[1] == Approx(q).epsilon(1e-9));  // d/dt(theta) = thetadot = q
+    CHECK(std::abs(lie.LgLf(0, LTDDOT)) < 1e-9);
+    CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);
+  }
+  SECTION("energy (deg 3, both controls)") {
+    const double V_td_max = 14.0, g_eff = 16.0;
+    const EnergyBarrier b = makeEnergyBarrier(a, V_td_max, g_eff);
+    CHECK(b(toArray(X)) == Approx(0.5 * (V_td_max * V_td_max - V * V) +
+                                  (g_eff - a.g) * X[LH])
+                               .epsilon(1e-9));
+    auto lie = barrierLie<3>(a, b, X);
+    // d/dt[1/2(Vtd^2 - V^2) + (g_eff-g)h] = -V*Vdot + (g_eff-g)*hdot.
+    CHECK(lie.Lf[1] ==
+          Approx(-V * xd[LV] + (g_eff - a.g) * xd[LH]).epsilon(1e-7));
+    CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);     // elevator enters at degree 3
+    CHECK(std::abs(lie.LgLf(0, LTDDOT)) > 1e-9);  // thrust enters at degree 3
+  }
 }
 
 // The generic HOCBF builder must reproduce the hand-expanded linear-class-K
@@ -234,153 +159,174 @@ TEST_CASE("disabled lon filter passes the nominal through", "[lon_cbf]") {
   CHECK(U[LTDDOT] == Approx(Un[LTDDOT]));
 }
 
-// The safety guarantee: after filtering, the hard barrier rows hold even when
-// the nominal command is unsafe (here a strong nose-down into the surface).
-TEST_CASE("lon filter enforces the hard barrier rows", "[lon_cbf]") {
+// ---- Hard-barrier enforcement: after filtering, the assembled HOCBF row holds
+// even when the nominal drives hard onto the violating side. Each test isolates
+// one barrier (all others disabled) so the correction is unambiguous.
+
+TEST_CASE("lon filter enforces the stall barrier when hard", "[lon_cbf]") {
   Setup s;
-  LonCBFConfig cfg;             // descent + thrust hard; airspeed soft
-  cfg.Vmin = 13.0;
+  // State close to the stall limit (alpha ~ 8.5 deg vs alpha_lim = 9 deg).
+  const double V = 16.0, gamma = -3.0 * kDeg, theta = 5.5 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 20.0, V, gamma, theta, 0.0, 2.0, 0.0;
+
+  LonCBFConfig cfg;
+  cfg.stall = true; cfg.stall_hard = true;
+  cfg.noseup = false; cfg.energy = false; cfg.impact = false;
+  cfg.thrust_limits = false;
+  LonCBFFilter filter(cfg);
+
+  const StallBarrier b = makeStallBarrier(cfg.alpha_stall, cfg.stall_margin);
+  auto lie = barrierLie<2>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf, {cfg.c_stall[0], cfg.c_stall[1]});
+  const double a_de = row.a(0, LDE);
+  REQUIRE(std::abs(a_de) > 1e-6);
+  CHECK(std::abs(row.a(0, LTDDOT)) < 1e-9);  // thrust absent from the degree-2 row
+
+  LonCtrlVec Un;
+  Un << (a_de > 0 ? cfg.de_max : cfg.de_min), 0.0;  // most-violating elevator (into stall)
+  REQUIRE(a_de * Un[LDE] > row.rhs + 1e-6);
+
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
+}
+
+TEST_CASE("lon filter enforces the energy barrier when hard", "[lon_cbf]") {
+  Setup s;
+  // Hot + low: V just under the height-scheduled cap so the ceiling is active.
+  const double V = 16.0, gamma = -3.0 * kDeg, theta = 0.0;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 5.0, V, gamma, theta, 0.0, 2.0, 0.0;
+
+  LonCBFConfig cfg;
+  cfg.energy = true; cfg.energy_hard = true;
+  cfg.stall = false; cfg.noseup = false; cfg.impact = false;
+  cfg.thrust_limits = false;
+  LonCBFFilter filter(cfg);
+
+  const EnergyBarrier b = makeEnergyBarrier(a, cfg.V_td_max, cfg.g_eff);
+  auto lie = barrierLie<3>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf, {cfg.c_energy[0], cfg.c_energy[1], cfg.c_energy[2]});
+  const double a_de = row.a(0, LDE), a_td = row.a(0, LTDDOT);
+  REQUIRE((std::abs(a_de) > 1e-9 || std::abs(a_td) > 1e-9));
+
+  // Most-violating in-box control: push both controls to the energy-raising edge.
+  LonCtrlVec Un;
+  Un << (a_de > 0 ? cfg.de_max : cfg.de_min),
+        (a_td > 0 ? cfg.Tddot_max : cfg.Tddot_min);
+  REQUIRE(a_de * Un[LDE] + a_td * Un[LTDDOT] > row.rhs + 1e-6);
+
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
+}
+
+TEST_CASE("lon filter enforces the nose-up barrier when hard", "[lon_cbf]") {
+  Setup s;
+  // Below h_noseup (default 3 m) so the row is assembled; theta just above floor.
+  const double V = 15.0, gamma = -3.0 * kDeg, theta = 3.5 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 2.0, V, gamma, theta, 0.0, 2.0, 0.0;
+
+  LonCBFConfig cfg;
+  cfg.noseup = true; cfg.noseup_hard = true; cfg.h_noseup = 3.0;
+  cfg.stall = false; cfg.energy = false; cfg.impact = false;
+  cfg.thrust_limits = false;
+  LonCBFFilter filter(cfg);
+
+  const NoseUpBarrier b = makeNoseUpBarrier(cfg.theta_min);
+  auto lie = barrierLie<2>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf, {cfg.c_noseup[0], cfg.c_noseup[1]});
+  const double a_de = row.a(0, LDE);
+  REQUIRE(std::abs(a_de) > 1e-6);
+  CHECK(std::abs(row.a(0, LTDDOT)) < 1e-9);
+
+  LonCtrlVec Un;
+  Un << (a_de > 0 ? cfg.de_max : cfg.de_min), 0.0;  // most-violating (nose-down)
+  REQUIRE(a_de * Un[LDE] > row.rhs + 1e-6);
+
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK((U - Un).norm() > 1e-6);
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
+}
+
+// The thrust actuator / HOCBF-validity guards (always hard) hold when the nominal
+// tries to drive the thrust state out of [0, Tmax].
+TEST_CASE("lon filter keeps thrust within the actuator limits", "[lon_cbf]") {
+  Setup s;
+  LonCBFConfig cfg;
+  cfg.stall = false; cfg.noseup = false; cfg.energy = false; cfg.impact = false;
+  cfg.thrust_limits = true;  // min/max thrust rows (always hard)
   LonCBFFilter filter(cfg);
 
   LonStateVec X;
-  X << 2.0, 16.0, -6.0 * kDeg, -2.0 * kDeg, 0.0, 1.5, 0.0;  // low + steep descent
+  X << 20.0, 16.0, -3.0 * kDeg, 0.0, 0.0, 0.2, 0.0;  // low thrust near the floor
   LonCtrlVec Un;
-  Un << -0.3, -100.0;           // unsafe: nose-down + chop thrust
+  Un << 0.0, -500.0;  // slam Tddot negative -> would drive T below 0
   LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
 
   CHECK_FALSE(filter.lastRecovery());
-  CHECK((U - Un).norm() > 1e-6);  // the unsafe command was corrected
-
-  const AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, X[LV], X[LTH] - X[LGAM]);
-  // Descent HOCBF row (hard) must hold: a . U <= rhs.
-  DescentBarrier bd = makeDescentBarrier(a, cfg.v_safe, cfg.CLmax, X[LV]);
-  auto lie = barrierLie<3>(a, bd, X);
-  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
-  HocbfRow row = hocbfRow(Lf, lie.LgLf,
-                          {cfg.c_descent[0], cfg.c_descent[1], cfg.c_descent[2]});
-  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
-  CHECK(lhs <= row.rhs + 1e-6);
-
   // Min-thrust row (hard) must hold: -Tddot <= (c11+c12)Tdot + c11 c12 T.
   HocbfRow tmin = thrustMinRow(X, cfg.c_thrust_min[0], cfg.c_thrust_min[1]);
   CHECK(tmin.a(0, LTDDOT) * U[LTDDOT] <= tmin.rhs + 1e-6);
 }
 
-// Independently cross-check the DRIFT Lie stack {b, L_f b, L_f^2 b, L_f^3 b}
-// against the finite-difference flow oracle. The existing tests verify the
-// control row L_g L_f^2 b vs the doc, but never the drift terms (the doc never
-// writes L_f^3 b), so a bug in the bespoke Taylor-jet engine (lie_taylor.hpp)
-// could slip through. The state carries nonzero q, T, Tdot so the higher-order
-// terms genuinely exercise the thrust/pitch couplings.
-TEST_CASE("drift Lie stack matches a finite-difference flow oracle", "[lon_cbf]") {
+// Independently cross-check the recovery barriers' DRIFT Lie stacks against the
+// finite-difference flow oracle (catches a bug in the bespoke Taylor-jet engine).
+// State carries nonzero q, T, Tdot so the higher-order terms exercise the
+// thrust/pitch couplings.
+TEST_CASE("recovery-barrier drift Lie stacks match a finite-difference flow oracle",
+          "[lon_cbf]") {
   Setup s;
   const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
-  const double q = 0.3, T = 5.0, Tdot = 1.0;
+  const double q = 0.3, T = 5.0, Tdot = 1.0, alpha = theta - gamma;
   AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-
   LonStateVec X;
-  X << 30.0, V, gamma, theta, q, T, Tdot;  // h=30 keeps the descent sqrt safe
-
+  X << 30.0, V, gamma, theta, q, T, Tdot;
   const double h = 1e-2;
   const int nsub = 200;
 
-  // L_f^0 b is exact (just b(X0)). For k>=1 the accuracy floor is the
-  // finite-difference ORACLE, not the engine: even Richardson-extrapolated time
-  // stencils bottom out around ~1e-4 relative on L_f^3 b. 1e-3 is therefore a
-  // deliberately loose guard -- it still catches any structural engine bug
-  // (a sign flip, a factor of 2, or a missing term are all >= several percent),
-  // which is the point of this cross-check.
-  auto checkStack = [](const std::array<double, 4>& engine,
-                       const std::array<double, 4>& oracle) {
-    CHECK(engine[0] == Approx(oracle[0]).epsilon(1e-9).margin(1e-9));
-    CHECK(engine[1] == Approx(oracle[1]).epsilon(1e-3).margin(1e-6));
-    CHECK(engine[2] == Approx(oracle[2]).epsilon(1e-3).margin(1e-6));
-    CHECK(engine[3] == Approx(oracle[3]).epsilon(1e-3).margin(1e-6));
-  };
-
-  SECTION("descent barrier") {
-    const DescentBarrier b = makeDescentBarrier(a, 0.6, 1.2, V);
-    const auto lie = barrierLie<3>(a, b, X);
-    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  // Loose 1e-3 relative guard: the finite-difference ORACLE (even Richardson-
+  // extrapolated) is the accuracy floor, not the engine. Still catches any
+  // structural bug (sign flip, factor of 2, missing term are all several percent).
+  SECTION("stall (deg 2)") {
+    const StallBarrier b = makeStallBarrier(11.0 * kDeg, 2.0 * kDeg);
+    const auto lie = barrierLie<2>(a, b, X);
+    const auto orc = lieDriftOracle(a, b, X, h, nsub);
+    CHECK(lie.Lf[0] == Approx(orc[0]).epsilon(1e-9).margin(1e-9));
+    CHECK(lie.Lf[1] == Approx(orc[1]).epsilon(1e-3).margin(1e-6));
+    CHECK(lie.Lf[2] == Approx(orc[2]).epsilon(1e-3).margin(1e-6));
   }
-
-  SECTION("airspeed barrier") {
-    AirspeedBarrier b{0.85 * V};
-    const auto lie = barrierLie<3>(a, b, X);
-    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+  SECTION("nose-up (deg 2)") {
+    const NoseUpBarrier b = makeNoseUpBarrier(3.0 * kDeg);
+    const auto lie = barrierLie<2>(a, b, X);
+    const auto orc = lieDriftOracle(a, b, X, h, nsub);
+    CHECK(lie.Lf[0] == Approx(orc[0]).epsilon(1e-9).margin(1e-9));
+    CHECK(lie.Lf[1] == Approx(orc[1]).epsilon(1e-3).margin(1e-6));
+    CHECK(lie.Lf[2] == Approx(orc[2]).epsilon(1e-3).margin(1e-6));
   }
-
-  SECTION("upper airspeed barrier") {
-    AirspeedUpperBarrier b{1.5 * V};
+  SECTION("energy (deg 3)") {
+    const EnergyBarrier b = makeEnergyBarrier(a, 14.0, 16.0);
     const auto lie = barrierLie<3>(a, b, X);
-    checkStack(lie.Lf, lieDriftOracle(a, b, X, h, nsub));
+    const auto orc = lieDriftOracle(a, b, X, h, nsub);
+    CHECK(lie.Lf[0] == Approx(orc[0]).epsilon(1e-9).margin(1e-9));
+    CHECK(lie.Lf[1] == Approx(orc[1]).epsilon(1e-3).margin(1e-6));
+    CHECK(lie.Lf[2] == Approx(orc[2]).epsilon(1e-3).margin(1e-6));
+    CHECK(lie.Lf[3] == Approx(orc[3]).epsilon(1e-3).margin(1e-6));
   }
-}
-
-// The upper airspeed barrier b = Vmax - V is the sign-flip of the lower
-// b_V = V - Vmin: same state dependence (V only), opposite sign. So for k >= 1
-// the drift Lie terms and the control row negate the lower barrier's, while the
-// k=0 value is Vmax - V (not V - Vmin). This is what lets it reuse the same
-// degree-3 machinery (the HOCBF builder handles the sign through L_g L_f^2 b).
-TEST_CASE("upper airspeed barrier is the sign-flip of the lower", "[lon_cbf]") {
-  Setup s;
-  const double V = 18.0, gamma = -5.0 * kDeg, theta = -2.0 * kDeg;
-  const double alpha = theta - gamma;
-  const double Vmin = 0.85 * V, Vmax = 1.5 * V;
-  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, alpha);
-
-  LonStateVec X;
-  X << 30.0, V, gamma, theta, 0.3, 5.0, 1.0;  // nonzero q, T, Tdot
-  AirspeedBarrier blo{Vmin};
-  AirspeedUpperBarrier bup{Vmax};
-  auto lielo = barrierLie<3>(a, blo, X);
-  auto lieup = barrierLie<3>(a, bup, X);
-
-  // k=0 values are the literal barrier definitions.
-  CHECK(bup(toArray(X)) == Approx(Vmax - V).epsilon(1e-12));
-  const LonStateVec xd = lonXdot(a, X, LonCtrlVec::Zero());
-  CHECK(lieup.Lf[1] == Approx(-xd[LV]).epsilon(1e-9));  // L_f b_up == -Vdot
-
-  // k>=1 drift terms and the control row negate the lower barrier's.
-  for (int k = 1; k <= 3; ++k)
-    CHECK(lieup.Lf[k] == Approx(-lielo.Lf[k]).epsilon(1e-9).margin(1e-12));
-  CHECK(lieup.LgLf(0, LDE) == Approx(-lielo.LgLf(0, LDE)).epsilon(1e-9).margin(1e-12));
-  CHECK(lieup.LgLf(0, LTDDOT) == Approx(-lielo.LgLf(0, LTDDOT)).epsilon(1e-9).margin(1e-12));
-}
-
-// The safety guarantee for the upper barrier: with it hard and a low Vmax, an
-// over-speed nominal (nose-down + max thrust to accelerate) must be corrected so
-// the assembled upper airspeed HOCBF row a . U <= rhs holds.
-TEST_CASE("lon filter enforces the upper airspeed barrier when hard", "[lon_cbf]") {
-  Setup s;
-  LonCBFConfig cfg;
-  cfg.descent = false;          // isolate the upper airspeed barrier
-  cfg.airspeed = false;
-  cfg.thrust_limits = false;
-  cfg.airspeed_upper = true;
-  cfg.airspeed_upper_hard = true;
-  cfg.Vmax_air = 18.5;          // just above the state's V -> barrier is active
-  LonCBFFilter filter(cfg);
-
-  LonStateVec X;
-  X << 30.0, 18.0, -3.0 * kDeg, -1.0 * kDeg, 0.0, 5.0, 0.0;  // near Vmax
-  LonCtrlVec Un;
-  Un << -0.3, 500.0;            // unsafe: nose-down + slam thrust (accelerate)
-  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
-
-  CHECK_FALSE(filter.lastRecovery());
-  CHECK((U - Un).norm() > 1e-6);  // the over-speed command was corrected
-
-  const AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, X[LV], X[LTH] - X[LGAM]);
-  AirspeedUpperBarrier b{cfg.Vmax_air};
-  auto lie = barrierLie<3>(a, b, X);
-  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
-  HocbfRow row = hocbfRow(Lf, lie.LgLf,
-                          {cfg.c_airspeed_upper[0], cfg.c_airspeed_upper[1],
-                           cfg.c_airspeed_upper[2]});
-  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
-  CHECK(lhs <= row.rhs + 1e-6);
 }
 
 // =============================================================================
@@ -471,7 +417,7 @@ TEST_CASE("impact barrier height relaxation engages only near the surface", "[lo
 
 // Independently cross-check the impact barrier's degree-2 drift stack
 // {b, L_f b, L_f^2 b} against the finite-difference flow oracle. Also exercises
-// the new exp() Taylor overload (through Phi) along a descending flow.
+// the exp() Taylor overload (through Phi) along a descending flow.
 TEST_CASE("impact barrier drift Lie stack matches the flow oracle", "[lon_cbf]") {
   Setup s;
   const double V = 16.0, gamma = -4.0 * kDeg, theta = 3.0 * kDeg;
@@ -504,7 +450,7 @@ TEST_CASE("lon filter enforces the impact barrier when hard", "[lon_cbf]") {
   const double n_peak = -probe(toArray(X));
 
   LonCBFConfig cfg;
-  cfg.descent = false; cfg.airspeed = false; cfg.airspeed_upper = false;
+  cfg.stall = false; cfg.noseup = false; cfg.energy = false;
   cfg.thrust_limits = false; cfg.impact = true; cfg.impact_hard = true;
   cfg.Nb = 0.0;                 // no height relaxation -> barrier fully active
   cfg.n_limit = n_peak + 1.0;   // ~1 g margin inside the safe set

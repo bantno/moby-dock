@@ -1,6 +1,6 @@
 # Safety-Critical Autonomous Water Landing via Control Barrier Functions: Mathematical Formulation and Derivations
 
-This document outlines the mathematical foundation and Control Barrier Function (CBF) formulations for an autonomous seaplane landing system. The system employs a high-order CBF-QP (Quadratic Program) safety filter over a nominal flight controller to guarantee hull-safe touchdown sink rates, airspeed stall margins, and hydrodynamic impact-force limits.
+This document outlines the mathematical foundation and Control Barrier Function (CBF) formulations for an autonomous seaplane landing system. The system employs a high-order CBF-QP (Quadratic Program) safety filter over a nominal flight controller to guarantee hull-safe touchdown impact loads, angle-of-attack (stall) margin, a nose-up touchdown attitude, and a bounded touchdown energy/speed.
 
 ## 1. System Dynamics and State Space
 
@@ -30,119 +30,82 @@ To solve the mixed-relative-degree problem between elevator ($\delta_e$) and thr
 
 ---
 
-## 2. Nominal Control Strategy (PX4 TECS Integration)
+## 2. Nominal Control Strategy
 
-The nominal controller is responsible for the baseline glide-slope capture. We utilize the PX4 Total Energy Control System (TECS). 
-
-Because the system is augmented, the QP optimizes $\ddot{T}$, but TECS outputs a raw thrust/throttle setpoint ($T_\text{TECS}$). To avoid the noise amplification of differentiating the TECS output, we treat $T_\text{TECS}$ as a tracking reference for our augmented thrust state using a Proportional-Derivative (PD) control law:
+The nominal controller is responsible for the baseline glide-slope capture (currently a cascade holding a constant flight-path angle $\gamma$; slated to move to an exponential-altitude flare $h(t)=h_0 e^{-t/\tau}$). Because the system is augmented, the QP optimizes $\ddot{T}$, but the nominal outputs a raw thrust setpoint $T_\text{set}$. To avoid differentiating it, we track $T_\text{set}$ with the augmented thrust state via a PD law:
 
 $$
-\ddot{T}_\text{nom} = K_p (T_\text{TECS} - T) - K_d \dot{T}
+\ddot{T}_\text{nom} = K_p (T_\text{set} - T) - K_d \dot{T}
 $$
 
-The nominal elevator command $\delta_{e,\text{nom}}$ is taken directly from the TECS pitch control output. The nominal control vector passed to the QP is $U_\text{nom} = [\delta_{e,\text{nom}}, \ddot{T}_\text{nom}]^T$.
+The nominal elevator command $\delta_{e,\text{nom}}$ comes from the pitch cascade. The nominal control vector passed to the QP is $U_\text{nom} = [\delta_{e,\text{nom}}, \ddot{T}_\text{nom}]^T$. **The barriers below depend only on the instantaneous state, so they are independent of this nominal / glide-path choice.**
 
 ---
 
 ## 3. High-Order Control Barrier Functions (HOCBFs)
 
-The safety filter enforces forward invariance on a set of barriers. The formulation uses extended class-$\mathcal{K}$ functions, chosen here as linear functions: $\alpha_i(x) = c_i x$.
+The safety filter enforces forward invariance on a set of barriers, using extended class-$\mathcal{K}$ functions chosen as linear: $\alpha_i(s)=c_i s$. In the current ("recovery") set the **impact-load barrier (§3.5) is the only hard (no-slack) safety row**; the stall, nose-up, and energy barriers are soft (penalized slack) with a strict priority set by their slack weights,
+$$
+w_\text{stall}\,(10^5) \;>\; w_\text{energy}\,(10^4) \;>\; w_\text{noseup}\,(10^3),
+$$
+so under a conflict on the shared elevator the QP sacrifices nose-up first, then energy, and protects the stall guard. The min/max-thrust barriers (§3.4) are also hard, as **actuator-effectiveness / HOCBF-validity guards**. There is deliberately **no airspeed-floor barrier** — stall is handled directly in angle of attack by §3.1.
 
-### 3.1 Descent-Rate Barrier ($b$)
-Ensures sufficient altitude to arrest the current sink rate before touchdown.
+### 3.1 Stall (Angle-of-Attack) Barrier ($b_\text{stall}$)
+Prevents aerodynamic stall and produces the pilot low-altitude stall recovery. With $\alpha=\theta-\gamma$,
 $$
-b(X) = V\sin\gamma + \sqrt{v_\text{safe}^2 + 2\, a_\text{brk}(V,\gamma)\, h} \ge 0
+b_\text{stall}(X) = \alpha_\text{lim} - (\theta-\gamma) \ge 0,
+\qquad \alpha_\text{lim} = \alpha_\text{stall} - \alpha_\text{margin},
 $$
-
-**Speed/path-angle-dependent braking acceleration.** The braking authority is the maximum
-upward acceleration available at the current airspeed by pulling to the (effective) max-lift
-condition — lift and drag minus gravity:
-$$
-a_\text{brk}(V,\gamma) = \frac{\rho_a V^2 S}{2m}\big[C_{L,\max}\cos\gamma - C_{D,\text{maxlift}}\sin\gamma\big] - g .
-$$
-**Thrust is deliberately omitted.** Putting the thrust state $T$ (or $\theta$) into $b$ would make
-$b$ depend on $T$/$\theta$ directly and drop the barrier's relative degree below 3, breaking the
-augmented HOCBF alignment (that $\theta$-coupling is exactly the §3.3 mixed-degree problem). Lift
-and drag depend only on $(V,\gamma)$, which are already in $b$, so **relative degree 3 is
-preserved** and the machinery below is unchanged. $C_{L,\max}$ is a config input (placeholder
-pending calibration); $C_{D,\text{maxlift}}$ is evaluated at the extrapolated max-lift $\alpha$.
-The implementation differentiates this $a_\text{brk}(V,\gamma)$ **exactly** via autodiff, so the
-control-affine *closed forms* written below (derived for a *constant* $a_\text{brk}$) are now
-reference only — the live Lie derivatives carry the extra $\partial b/\partial V$, $\partial b/\partial\gamma$ terms.
+where $\alpha_\text{stall}$ is the NACA 4414 wing-stall AoA ($11^\circ$) and $\alpha_\text{margin}$ a buffer. As $\alpha\to\alpha_\text{lim}$ the HOCBF drives the elevator **nose-down** (saturating at the boundary) — i.e. *pitch down + full elevator*, exactly the pilot recovery.
 
 **Derivation & Authority:**
-* $\dot{b}$ yields vertical acceleration ($\ddot{h}$), exposing $T$ but no controls.
-* $\ddot{b}$ exposes $\dot{T}$ and $q$.
-* $\dddot{b}$ exposes the controls $\ddot{T}$ and $\dot{q}$ (which contains $\delta_e$).
+* $\dot b_\text{stall} = -\dot\theta + \dot\gamma = -q + \dot\gamma$ — no control ($\dot\gamma$ carries $T$ but no input).
+* $\ddot b_\text{stall}$ exposes $\dot q$, which contains $\delta_e$.
 
-**Relative Degree:** $3$ for both $\delta_e$ and $\ddot{T}$.
-**Control Affine Form:**
+**Relative Degree:** $2$, via the elevator ($\theta\!\to\!q\!\to\!\delta_e$); $\ddot T$ is absent from the degree-2 control row. **Control-affine form** (linear in the state, exact via autodiff):
 $$
-\dddot{b} = L_F^3 b + \underbrace{\left[ \left( \frac{T}{m}\cos\theta + \frac{1}{m}\left( \frac{\partial L}{\partial \alpha}\cos\gamma - \frac{\partial D}{\partial \alpha}\sin\gamma \right) \right) \left( \frac{\rho_a V^2 S \bar{c}}{2 I_{yy}} \right) C_{m\delta_e} \right]}_{\text{Elevator Authority}} \delta_e + \underbrace{\left[ \frac{\sin\theta}{m} \right]}_{\text{Thrust Authority}} \ddot{T}
-$$
-
-### 3.2 Airspeed Barrier ($b_V$)
-Prevents aerodynamic stall during the flare maneuver.
-$$
-b_V(X) = V - V_\text{min} \ge 0
+\ddot b_\text{stall} = L_F^2 b_\text{stall} + \big(L_{G_{\delta_e}}L_F b_\text{stall}\big)\,\delta_e,
+\qquad
+L_{G_{\delta_e}}L_F b_\text{stall} = -\left(\frac{\rho_a V^2 S \bar c}{2 I_{yy}}\right)C_{m\delta_e}.
 $$
 
-**Upper (over-speed) barrier.** A symmetric maximum-airspeed barrier
+### 3.2 Nose-Up (Attitude) Barrier ($b_\text{nose}$)
+Holds the pitch attitude nose-up in the final metres so the impact model (§3.5) stays valid — its gate requires $\tau=\theta-\theta_\text{keel}>0$ — and so the touchdown is nose-up.
 $$
-b_{V,\max}(X) = V_\text{max} - V \ge 0
+b_\text{nose}(X) = \theta - \theta_\text{min} \ge 0,
+\qquad \theta_\text{min} \ge \theta_\text{keel}.
 $$
-bounds high-energy water impact / structural limits. It has the same relative
-degree (3) and control-affine structure as $b_V$, with the authority signs
-flipped: since $b_{V,\max}$ depends on $V$ only, $L_f^k b_{V,\max} = -L_f^k b_V$
-for $k \ge 1$ and $L_g L_f^2 b_{V,\max} = -L_g L_f^2 b_V$ (only the $k=0$ value
-differs, $V_\text{max}-V$ vs $V-V_\text{min}$). It therefore reuses the same
-degree-3 QP machinery unchanged. Implemented as `AirspeedUpperBarrier` in
-`hocbf.hpp` and wired into the filter via the `airspeed_upper` flag + `Vmax_air`
-in `LonCBFConfig` (soft by default, mirroring the lower barrier). `V_max` is a
-placeholder pending a real never-exceed / structural speed.
+It is **$\theta$-based, not AoA-based**: a floor on $\theta$ directly guarantees the impact gate (an AoA floor would not, since a steep $\gamma$ lets $\theta=\alpha+\gamma$ go negative), and gives a clean degree-2 with no $\gamma$-coupling. The row is assembled only below $h_\text{noseup}$ (the final $\sim$3 m). As the softest row it **yields to the stall guard**: when a steep $\gamma$ makes the demanded nose-up conflict with the stall limit, §3.1 wins and the nose drops — the recovery.
 
-**Derivation & Authority:**
-* $\dot{b}_V = \dot{V}$, exposing $T$.
-* $\ddot{b}_V$ exposes $\dot{T}$ and $q$.
-* $\dddot{b}_V$ exposes $\ddot{T}$ and $\dot{q}$ (containing $\delta_e$).
-
-**Relative Degree:** $3$ for both $\delta_e$ and $\ddot{T}$.
-**Control Affine Form:**
+**Relative Degree:** $2$, via the elevator ($\theta\!\to\!q\!\to\!\delta_e$). **Control-affine form:**
 $$
-\dddot{b}_V = L_F^3 b_V + \underbrace{\left[ -\frac{1}{m}\left( T\sin\alpha + \frac{\partial D}{\partial \alpha} \right) \left( \frac{\rho_a V^2 S \bar{c}}{2 I_{yy}} \right) C_{m\delta_e} \right]}_{\text{Elevator Authority}} \delta_e + \underbrace{\left[ \frac{\cos\alpha}{m} \right]}_{\text{Thrust Authority}} \ddot{T}
+\dot b_\text{nose} = q,\qquad
+\ddot b_\text{nose} = L_F^2 b_\text{nose} + \big(L_{G_{\delta_e}}L_F b_\text{nose}\big)\,\delta_e,
+\qquad
+L_{G_{\delta_e}}L_F b_\text{nose} = \left(\frac{\rho_a V^2 S \bar c}{2 I_{yy}}\right)C_{m\delta_e}.
 $$
 
-### 3.3 Contact-Force Barrier ($b_F$ / $b_{comp}$)
-Couples the allowable sink rate to pitch attitude based on von Kármán/Wagner water-entry slamming theory to bound the peak structural load.
-
-Allowable velocity becomes a function of attitude $\theta$:
+### 3.3 Total-Energy Barrier ($b_E$)
+Bounds the touchdown kinetic energy / horizontal speed via a height-scheduled **total-specific-energy ceiling**. With specific energy $E=\tfrac12 V^2 + g h$ and a ceiling $E_\text{cap}(h)=\tfrac12 V_\text{td,max}^2 + g_\text{eff}\, h$,
 $$
-v_\text{safe}^2(\theta) = \frac{2\,F_\text{max}}{\rho_w\,C_s(\beta_\text{eff}(\theta))\,A_\text{ref}}
+b_E(X) = E_\text{cap}(h) - E = \tfrac12\big(V_\text{td,max}^2 - V^2\big) + (g_\text{eff}-g)\,h \ge 0
+\;\Longleftrightarrow\; V \le \sqrt{V_\text{td,max}^2 + 2(g_\text{eff}-g)\,h}.
 $$
-Where effective deadrise $\beta_\text{eff}(\theta) = \beta_\text{hull} + (\theta - \theta_\text{surf})$.
-
-**Composite Barrier:**
+A *constant* energy cap is useless for bounding touchdown speed — potential energy converts to kinetic on descent, so a constant-$E$ glider arrives fast — hence the height schedule, which makes it a **descending airspeed cap**. It is a **loose never-exceed ceiling**: $V_\text{td,max}$ is the hull/structural touchdown limit ($\approx 1.4\,V_\text{stall}$), and $g_\text{eff}$ is sized so the ceiling clears the whole approach and *starts satisfied*,
 $$
-b_{comp}(X) = V\sin\gamma + \sqrt{v_\text{safe}^2(\theta) + 2 a_\text{brk} h} \ge 0
+g_\text{eff} \ge g + \frac{V_0^2 - V_\text{td,max}^2}{2 h_0}.
 $$
+$b_E$ is a **polynomial in $(V,h)$** ($C^\infty$, no $\sqrt{\cdot}$ — the airspeed cap is $b_E\ge0$ solved for $V$, never formed); only $V,h$ enter (not $\theta$/$T$), so the degree-3 alignment is preserved.
 
 **Derivation & Authority:**
-Because $v_\text{safe}^2$ is a function of $\theta$, taking $\dot{b}_{comp}$ introduces $\dot{\theta} = q$.
-Consequently, taking the *second* derivative ($\ddot{b}_{comp}$) introduces $\dot{q}$, exposing the elevator control $\delta_e$ one derivative earlier than thrust.
+* $\dot b_E = -V\dot V + (g_\text{eff}-g)\dot h$ — exposes $T$ (through $\dot V$) but no control.
+* $\ddot b_E$ exposes $\dot T$ and $q$.
+* $\dddot b_E$ exposes both controls $\ddot T$ and $\dot q$ (containing $\delta_e$).
 
-**Relative Degree:** $2$ for $\delta_e$, $3$ for $\ddot{T}$.
-*Architecture Decision:* Enforced as a mixed-degree formulation at Degree 2. The elevator ($\delta_e$) acts alone to enforce this specific constraint, accurately reflecting the high-bandwidth nature of attitude adjustments prior to hydrodynamic impact.
+**Relative Degree:** $3$ for **both** $\delta_e$ (through drag via $\alpha$) and $\ddot T$ (through the $T,\dot T$ chain) — the natural energy lever is thrust, with the elevator a weaker drag lever. Enforced with the shared degree-3 machinery ($L_F^3 b_E$ plus a two-column control row), class-$\mathcal K$ of size 3.
 
-**QP Constraint Formulation (Degree 2):**
-$$
-\ddot{b}_{comp} = L_F^2 b_{comp} + L_{G_{\delta_e}} L_F b_{comp} \cdot \delta_e
-$$
-$$
-L_{G_{\delta_e}} L_F b_{comp} \cdot \delta_e \ge - \left( L_F^2 b_{comp} + c_1 \dot{b}_{comp} + c_2(\dot{b}_{comp} + c_1 b_{comp}) \right)
-$$
-
-### 3.4 Actuator Limit Barriers
-Because thrust is an augmented state, its physical limits must be enforced via state-constrained CBFs.
+### 3.4 Actuator Limit / HOCBF-Validity Barriers
+Because thrust is an augmented state, its physical limits must be enforced via state-constrained CBFs. These are kept **hard** and serve double duty as the **actuator-effectiveness / HOCBF-validity guards**: every elevator-driven barrier's control coefficient scales with dynamic pressure ($L_{G_{\delta_e}}L_F b \propto \rho_a V^2$), so keeping the augmented thrust chain bounded (and the aircraft flying) preserves the relative-degree structure the whole formulation rests on. This is why no separate airspeed-floor CBF is needed.
 
 **Minimum Thrust ($b_1 = T \ge 0$):**
 * Relative Degree: 2 (with respect to $\ddot{T}$)
@@ -152,8 +115,8 @@ Because thrust is an augmented state, its physical limits must be enforced via s
 * Relative Degree: 2 (with respect to $\ddot{T}$)
 * Constraint: $\ddot{T} \le -(c_{2,1} + c_{2,2})\dot{T} + c_{2,1}c_{2,2}(T_\text{max} - T)$
 
-### 3.5 Impact-Load Barrier (Implemented — NACA TN 1516)
-The rigorous realization of the §3.3 contact-load idea, using the closed(ish)-form peak
+### 3.5 Impact-Load Barrier (the only hard safety row — NACA TN 1516)
+The rigorous hydrodynamic touchdown-load barrier, using the closed(ish)-form peak
 load factor of Milwitzky's V-bottom step-landing theory (NACA TN 1516) instead of a
 hand-shaped $v_\text{safe}(\theta)$. Code: `include/autoland/impact_barrier.hpp`,
 `scripts/precompute_impact_clf.py`. Reference: `documentation/impact_load_barrier_spec.md`.
@@ -202,15 +165,17 @@ $$
 \dddot b = L_F^3 b + (L_{G}L_F^2 b)u + L_F(L_{G}L_F b)u + (L_{G}L_{G}L_F b)u^2 + (L_{G}L_F b)\dot u
 $$
 carries non-affine $u^2$ and $\dot u$ terms once the elevator has entered at degree 2.
-It is therefore enforced as a **clean degree-2 HOCBF** (the §3.3 architecture decision): the
+It is therefore enforced as a **clean degree-2 HOCBF** (elevator-only): the
 thrust column $L_{G_{\ddot T}}L_F b_\text{imp}=0$ drops out and the elevator/flare acts alone,
 $$
 \underbrace{L_{G_{\delta_e}}L_F b_\text{imp}}_{a}\,\delta_e \;\ge\; -\big(L_F^2 b_\text{imp}
 + (c_1+c_2)L_F b_\text{imp} + c_1 c_2\, b_\text{imp}\big).
 $$
-Thrust still bounds impact load through the descent/sink-rate barrier (§3.1). The row is
-assembled only in the model-valid window (below $z_\text{gate}$, descending, positive trim,
-$\kappa$ clamped to $[0.2,10]$) and softened with a height-scheduled slack (Option C).
+Thrust still bounds the approach energy/speed through the total-energy barrier (§3.3); the impact
+row itself is elevator-only. The row is assembled only in the model-valid window (below
+$z_\text{gate}$, descending, positive trim, $\kappa$ clamped to $[0.2,10]$) and is now enforced
+**hard** — the only hard safety row — with the height gate $\Phi(z)$ keeping it inactive except
+near contact.
 
 ---
 
@@ -219,16 +184,18 @@ $\kappa$ clamped to $[0.2,10]$) and softened with a height-scheduled slack (Opti
 The safety filter operates continuously, solving the following Quadratic Program at each timestep:
 
 $$
-U^\star = \arg\min_{U \in \mathbb{R}^2}\ \frac{1}{2}\|U - U_\text{nom}\|_W^2
+U^\star = \arg\min_{U \in \mathbb{R}^2}\ \frac{1}{2}\|U - U_\text{nom}\|_W^2 + \sum_i \tfrac12 w_i\,\delta_i^2
 $$
+
+where $\delta_i\ge0$ is the slack on soft row $i$ (quadratically penalized by $w_i$; hard rows carry no slack). If the hard set is infeasible the filter falls back to a best-effort minimum-violation solve.
 
 **Subject to the matrix inequality $A U \le \textbf{b}_{qp}$:**
 
-1.  **Descent-Rate (Degree 3):** Shared authority between $\delta_e$ and $\ddot{T}$.
-2.  **Airspeed (Degree 3):** Shared authority between $\delta_e$ and $\ddot{T}$.
-3.  **Impact-Load (Degree 2, §3.5):** Enforced exclusively by $\delta_e$; height-relaxed
-    via $\Phi(z)$ and softened with a height-scheduled slack. Realizes the §3.3 contact-load idea.
-4.  **Min Thrust (Degree 2):** Enforced exclusively by $\ddot{T}$. (Hard constraint.)
-5.  **Max Thrust (Degree 2):** Enforced exclusively by $\ddot{T}$. (Hard contraint.)
+1.  **Impact-Load (Degree 2, §3.5):** Enforced exclusively by $\delta_e$; height-relaxed via $\Phi(z)$. The only **hard** safety row.
+2.  **Stall / AoA (Degree 2, §3.1):** Enforced by $\delta_e$. Soft, highest weight ($10^5$) — produces the pitch-down recovery.
+3.  **Total-Energy (Degree 3, §3.3):** Shared authority between $\delta_e$ and $\ddot{T}$. Soft ($10^4$).
+4.  **Nose-Up (Degree 2, §3.2):** Enforced by $\delta_e$, gated to the final metres. Soft, lowest weight ($10^3$) — yields to stall.
+5.  **Min Thrust (Degree 2, §3.4):** Enforced exclusively by $\ddot{T}$. Hard (actuator/validity guard).
+6.  **Max Thrust (Degree 2, §3.4):** Enforced exclusively by $\ddot{T}$. Hard (actuator/validity guard).
 
 *Post-Processing:* The optimized $U^\star = [\delta_e^\star, \ddot{T}^\star]^T$ is returned. $\delta_e^\star$ is passed directly to the elevator servos. $\ddot{T}^\star$ is integrated twice onboard the flight computer to generate the final throttle setpoint passed to the PX4 control interface.

@@ -22,7 +22,7 @@
 // bounds impact load through the descent/sink-rate barrier (spec section 4).
 //
 // K0 and the local-affine model Clf(kappa) ~ Clf0 + dClf_dk*(kappa - kappa0) are
-// FROZEN at the eval point by makeImpactLoadBarrier (mirrors makeDescentBarrier),
+// FROZEN at the eval point by makeImpactLoadBarrier (like the other factories),
 // so the templated barrier is smooth and needs no cbrt/pow in the Taylor path,
 // while the attitude coupling stays live through kappa(tau, gamma0).
 //

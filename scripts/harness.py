@@ -2,13 +2,13 @@
 """Run-and-plot harness for the longitudinal CBF-QP water-landing sim.
 
 One command builds (if stale), runs `lon_autoland_sim` on a scenario, and plots
-the trace. Every plot annotation (v_safe, Vmin, V_max, Tmax, n_limit, ...) is
+the trace. Every plot annotation (V_td_max, alpha_stall, theta_min, Tmax, ...) is
 read from the *resolved* scenario, so the figure can never drift out of sync
 with the run the way the hand-passed `--vmin 15` plot-script args could.
 
   # single run, plot to runs/<name>.png
   scripts/harness.py run
-  scripts/harness.py run --name dive --set gamma_app_deg=-60 --set cbf.v_safe=0.1
+  scripts/harness.py run --name dive --set gamma_app_deg=-60 --set cbf.V_td_max=12
   scripts/harness.py run --set cbf.enabled=false -o figures/nominal_only.png
 
   # overlay several cases (subsumes plot_lon_compare / plot_gain_compare)
@@ -86,10 +86,12 @@ def ann(scenario):
     cbf = scenario.get("cbf", {}) or {}
     return dict(
         V_app=V_app,
-        v_safe=cbf.get("v_safe", 0.6),
-        a_brk=cbf.get("a_brk", 3.0),
-        Vmin=cbf.get("Vmin", 0.85 * V_app),
-        Vmax=cbf.get("V_max", 1.5 * V_app),
+        V_td_max=cbf.get("V_td_max", 14.0),
+        g_eff=cbf.get("g_eff", 16.0),
+        alpha_stall_deg=cbf.get("alpha_stall_deg", 11.0),
+        stall_margin_deg=cbf.get("stall_margin_deg", 2.0),
+        theta_min_deg=cbf.get("theta_min_deg", 3.0),
+        h_noseup=cbf.get("h_noseup", 3.0),
         Tmax=cbf.get("Tmax", 50.0),
         n_limit=cbf.get("n_limit", 3.0),
         cbf_on=bool(cbf.get("enabled", True)) and bool(scenario.get("cbf_enabled", True)),
@@ -161,28 +163,40 @@ def touchdown_index(d):
 
 
 def barrier_report(d, a):
-    """Min of each barrier over the trace, with the b>=0 safety verdict."""
+    """Min of each barrier over the trace. Only the HARD rows (impact + thrust)
+    fail the verdict; the soft rows (stall/nose-up/energy) report their min and
+    are allowed to dip transiently. Nose-up is judged only over its active window
+    (h < h_noseup), where the row is actually assembled."""
+    h = d["h"]
+    # name -> (value, active-mask or None, hard?)
     bars = {
-        "b_descent": d["b_descent"],
-        "b_airspeed": d["b_airspeed"],
-        "b_airspeed_upper": d["b_airspeed_upper"],
-        "b_impact": d["b_impact"],
-        "b_thrust_min (T)": d["T"],
-        "b_thrust_max (Tmax-T)": a["Tmax"] - d["T"],
+        "b_stall":               (d["b_stall"],       None,               False),
+        "b_noseup":              (d["b_noseup"],      h < a["h_noseup"],  False),
+        "b_energy":              (d["b_energy"],      None,               False),
+        "b_impact":              (d["b_impact"],      None,               True),
+        "b_thrust_min (T)":      (d["T"],             None,               True),
+        "b_thrust_max (Tmax-T)": (a["Tmax"] - d["T"], None,               True),
     }
-    print("[harness] barrier minima (>= 0 = safe):")
+    print("[harness] barrier minima (hard rows must be >= 0; soft rows may dip):")
     worst_ok = True
-    for nm, v in bars.items():
-        nnan = int(np.isnan(v).sum())
-        mn = float(np.nanmin(v)) if nnan < len(v) else float("nan")
+    for nm, (v, mask, hard) in bars.items():
+        vv = v[mask] if mask is not None else v
+        if len(vv) == 0:
+            print(f"    {nm:24s} (never active)")
+            continue
+        nnan = int(np.isnan(vv).sum())
+        mn = float(np.nanmin(vv)) if nnan < len(vv) else float("nan")
         ok = nnan == 0 and mn >= -1e-6
-        worst_ok &= ok
-        flag = "OK" if ok else ("NaN" if nnan else "VIOLATION")
+        if hard:
+            worst_ok &= ok
+            flag = "OK" if ok else ("NaN" if nnan else "VIOLATION")
+        else:
+            flag = "soft" if mn >= -1e-6 else "soft (dips)"
         tail = f"  ({nnan} NaN)" if nnan else ""
         print(f"    {nm:24s} min={mn:+.4f}  {flag}{tail}")
     i = touchdown_index(d)
     print(f"[harness] touchdown: t={d['t'][i]:.2f}s  sink={d['sink'][i]:.3f} m/s  "
-          f"V={d['V'][i]:.2f} m/s  vs v_safe={a['v_safe']}")
+          f"V={d['V'][i]:.2f} m/s  vs V_td_max={a['V_td_max']}")
     return worst_ok
 
 
@@ -206,26 +220,32 @@ def plot_single(d, a, out, title):
     ax[0, 0].axhline(0, color="k", lw=0.8, ls=":")
     ax[0, 0].set(ylabel="altitude h [m]", title="Descent profile")
 
-    env = np.sqrt(a["v_safe"] ** 2 + 2 * a["a_brk"] * np.clip(d["h"], 0, None))
     ax[0, 1].plot(t, d["sink"], color="tab:red", label="sink rate")
-    ax[0, 1].plot(t, env, color="tab:gray", ls="--",
-                  label=r"envelope $\sqrt{v_{safe}^2+2a_{brk}h}$")
-    ax[0, 1].axhline(a["v_safe"], color="k", ls=":", lw=0.9, label=f"v_safe={a['v_safe']}")
-    ax[0, 1].set(ylabel="sink [m/s] (down +)", title="Sink rate vs descent envelope")
+    ax[0, 1].axhline(0, color="k", ls=":", lw=0.9)
+    ax[0, 1].set(ylabel="sink [m/s] (down +)",
+                 title="Sink rate (impact barrier regulates touchdown)")
     ax[0, 1].legend(fontsize=8)
 
-    ax[1, 0].plot(t, d["V"], color="tab:green")
-    ax[1, 0].axhline(a["Vmin"], color="k", ls=":", lw=0.9, label=f"Vmin={a['Vmin']}")
-    ax[1, 0].axhline(a["Vmax"], color="k", ls="--", lw=0.9, label=f"Vmax={a['Vmax']}")
-    ax[1, 0].set(ylabel="V [m/s]", title="Airspeed vs floor/ceiling")
+    g = 9.80665
+    vcap = np.sqrt(a["V_td_max"] ** 2 + 2 * (a["g_eff"] - g) * np.clip(d["h"], 0, None))
+    ax[1, 0].plot(t, d["V"], color="tab:green", label="V")
+    ax[1, 0].plot(t, vcap, color="tab:gray", ls="--",
+                  label=r"energy cap $\sqrt{V_{td}^2+2(g_{eff}-g)h}$")
+    ax[1, 0].axhline(a["V_td_max"], color="k", ls=":", lw=0.9, label=f"V_td_max={a['V_td_max']}")
+    ax[1, 0].set(ylabel="V [m/s]", title="Airspeed vs energy-ceiling cap")
     ax[1, 0].legend(fontsize=8)
 
+    alpha_lim = a["alpha_stall_deg"] - a["stall_margin_deg"]
     ax[1, 1].plot(t, d["theta_deg"], label=r"$\theta$")
     ax[1, 1].plot(t, d["theta_cmd_deg"], ls="--", label=r"$\theta_{cmd}$")
     ax[1, 1].plot(t, d["gamma_deg"], label=r"$\gamma$")
     ax[1, 1].plot(t, d["alpha_deg"], label=r"$\alpha$")
+    ax[1, 1].axhline(alpha_lim, color="tab:red", ls=":", lw=0.9,
+                     label=f"alpha_lim={alpha_lim:.0f}")
+    ax[1, 1].axhline(a["theta_min_deg"], color="tab:brown", ls=":", lw=0.9,
+                     label=f"theta_min={a['theta_min_deg']:.0f}")
     ax[1, 1].set(ylabel="angle [deg]", title="Attitude / flight-path angles")
-    ax[1, 1].legend(fontsize=8, ncol=2)
+    ax[1, 1].legend(fontsize=7, ncol=2)
 
     ax[2, 0].plot(t, np.rad2deg(d["de"]), color="tab:purple", label=r"$\delta_e$ filtered")
     ax[2, 0].plot(t, np.rad2deg(d["de_nom"]), color="tab:purple", ls=":", alpha=0.7,
@@ -238,9 +258,9 @@ def plot_single(d, a, out, title):
     axT.set_ylabel("thrust T [N]", color="tab:orange")
 
     bars = {
-        "b_descent": d["b_descent"],
-        "b_airspeed": d["b_airspeed"],
-        "b_airspeed_upper": d["b_airspeed_upper"],
+        "b_stall": d["b_stall"],
+        "b_noseup": d["b_noseup"],
+        "b_energy": d["b_energy"],
         "b_impact": d["b_impact"],
         "b_thrust_min": d["T"],
         "b_thrust_max": a["Tmax"] - d["T"],
@@ -267,9 +287,6 @@ def plot_compare(cases, a, out, title):
     fig.suptitle(title, fontsize=14, weight="bold")
 
     hmax = max(c["h"].max() for _, c in cases)
-    hgrid = np.linspace(0, hmax, 200)
-    ax[0, 1].plot(hgrid, np.sqrt(a["v_safe"] ** 2 + 2 * a["a_brk"] * hgrid),
-                  color="tab:gray", ls="--", label=r"envelope")
 
     tds = []
     for k, (lbl, d) in enumerate(cases):
@@ -283,15 +300,14 @@ def plot_compare(cases, a, out, title):
         ax[1, 0].plot(d["t"], d["theta_deg"], color=c, ls="--", alpha=0.7)
         ax[1, 1].plot(d["t"], np.rad2deg(d["de"]), color=c, label=f"{lbl} filtered")
         ax[1, 1].plot(d["t"], np.rad2deg(d["de_nom"]), color=c, ls=":", alpha=0.6)
-        ax[1, 2].plot(d["t"], d["b_descent"], color=c, label=lbl)
+        ax[1, 2].plot(d["t"], d["b_impact"], color=c, label=lbl)
 
     ax[0, 0].axhline(0, color="k", lw=0.8, ls=":")
     ax[0, 0].set(xlabel="t [s]", ylabel="h [m]", title="Descent profile")
-    ax[0, 1].axhline(a["v_safe"], color="k", ls=":", lw=0.9)
     ax[0, 1].set(xlabel="altitude h [m]", ylabel="sink [m/s]",
-                 title="Sink vs altitude (envelope dashed)")
+                 title="Sink vs altitude")
     ax[0, 1].set_xlim(min(12, hmax), 0)
-    ax[0, 2].axhline(a["Vmin"], color="k", ls=":", lw=0.9, label=f"Vmin={a['Vmin']}")
+    ax[0, 2].axhline(a["V_td_max"], color="k", ls=":", lw=0.9, label=f"V_td_max={a['V_td_max']}")
     ax[0, 2].set(xlabel="t [s]", ylabel="V [m/s]", title="Airspeed")
     ax[1, 0].set(xlabel="t [s]", ylabel="angle [deg]",
                  title=r"$\gamma$ (solid) / $\theta$ (dashed)")
@@ -299,8 +315,8 @@ def plot_compare(cases, a, out, title):
                  title="Elevator (filtered solid, nominal dotted)")
     td_str = "  ".join(f"{l}: {s:.3f}" for l, s in tds)
     ax[1, 2].axhline(0, color="k", lw=1.0, ls="--")
-    ax[1, 2].set(xlabel="t [s]", ylabel="b_descent",
-                 title=f"Descent barrier  (td sink m/s -- {td_str})")
+    ax[1, 2].set(xlabel="t [s]", ylabel="b_impact",
+                 title=f"Impact barrier  (td sink m/s -- {td_str})")
 
     for x in ax.flat:
         x.grid(alpha=0.3)
@@ -325,7 +341,7 @@ def cmd_run(args):
     out = args.fig or os.path.join(args.outdir, f"{args.name}.png")
     cbf = "CBF on" if a["cbf_on"] else "CBF OFF"
     title = (f"Lon water landing -- {args.name}  "
-             f"(V_app={a['V_app']}, {cbf}, v_safe={a['v_safe']})")
+             f"(V_app={a['V_app']}, {cbf}, V_td_max={a['V_td_max']})")
     plot_single(d, a, out, title)
 
 
