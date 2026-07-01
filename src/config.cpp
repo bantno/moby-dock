@@ -56,6 +56,12 @@ AircraftConfig loadAircraftConfig(const std::string& path) {
   const YAML::Node aero = root["aero"];
   if (aero) c.parasite_CD0 = get<double>(aero, "parasite_CD0", 0.0);
 
+  const YAML::Node stall = root["stall"];
+  if (stall) {
+    c.stall.enabled = get<bool>(stall, "enabled", false);
+    c.stall.severity = get<double>(stall, "severity", 1.0);
+  }
+
   const YAML::Node env = root["environment"];
   if (env) {
     c.env.rho = get<double>(env, "rho", 1.225);

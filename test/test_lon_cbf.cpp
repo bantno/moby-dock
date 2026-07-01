@@ -118,8 +118,13 @@ TEST_CASE("descent barrier uses speed-dependent a_brk(V,gamma)", "[lon_cbf]") {
   const double CDml = cdAtMaxLift(a, CLmax, V);
   const double abrk = (0.5 * a.rho * a.Sref / a.mass) * V * V *
                           (CLmax * std::cos(gamma) - CDml * std::sin(gamma)) - a.g;
-  const double b_expected = V * std::sin(gamma) +
-                            std::sqrt(v_safe * v_safe + 2.0 * abrk * X[LH]);
+  // The barrier floors the radicand with the smooth positive map eps_r (so it can
+  // never go NaN); mirror it here. At this safe state (h=30) the floor is a ~1e-9
+  // bias, but reproducing it keeps the exact-match tolerance meaningful.
+  const double arg = v_safe * v_safe + 2.0 * abrk * X[LH];
+  const double arg_pos =
+      0.5 * (arg + std::sqrt(arg * arg + 4.0 * b.eps_r * b.eps_r));
+  const double b_expected = V * std::sin(gamma) + std::sqrt(arg_pos);
 
   CHECK(b(toArray(X)) == Approx(b_expected).epsilon(1e-12));
   CHECK(abrk > 0.0);                            // real braking authority

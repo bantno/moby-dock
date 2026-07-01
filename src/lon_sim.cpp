@@ -5,6 +5,8 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <random>
+#include <string>
 
 #include "autoland/dynamics.hpp"
 #include "autoland/hocbf.hpp"
@@ -147,6 +149,7 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.airspeed_upper_hard = getOrB(yc, "airspeed_upper_hard", false);
   cb.impact_hard = getOrB(yc, "impact_hard", false);
   cb.v_safe = getOr(yc, "v_safe", 0.6);
+  cb.h_flare = getOr(yc, "h_flare", 0.0);  // descent-barrier flare height [m]
   cb.a_brk = getOr(yc, "a_brk", 3.0);
   cb.CLmax = getOr(yc, "CL_max", 1.2);
   cb.Vmin = getOr(yc, "Vmin", 0.85 * V_app);
@@ -161,24 +164,37 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.tau_keel = getOr(yc, "tau_keel_deg", 0.0) * kDeg;
   cb.z_gate = getOr(yc, "z_gate", 10.0);
   cb.eps_g0 = getOr(yc, "eps_g0", 0.02);
-  cb.impact_slack_lo = getOr(yc, "impact_slack_lo", 1.0e2);
-  cb.impact_slack_hi = getOr(yc, "impact_slack_hi", 1.0e5);
   cb.c_descent = getArr3(yc, "c_descent", {2.0, 2.0, 2.0});
   cb.c_airspeed = getArr3(yc, "c_airspeed", {2.0, 2.0, 2.0});
   cb.c_airspeed_upper = getArr3(yc, "c_airspeed_upper", {2.0, 2.0, 2.0});
   cb.c_thrust_min = getArr2(yc, "c_thrust_min", {4.0, 4.0});
   cb.c_thrust_max = getArr2(yc, "c_thrust_max", {4.0, 4.0});
   cb.c_impact = getArr2(yc, "c_impact", {2.0, 2.0});
-  cb.w_de = getOr(yc, "w_de", 1.0);
-  cb.w_Tddot = getOr(yc, "w_Tddot", 1.0);
-  cb.slack_penalty = getOr(yc, "slack_penalty", 1.0e4);
+  // Per-constraint quadratic slack weights (soft rows only); identity control cost.
+  cb.w_slack_descent = getOr(yc, "w_slack_descent", 1.0e4);
+  cb.w_slack_airspeed = getOr(yc, "w_slack_airspeed", 1.0e4);
+  cb.w_slack_airspeed_upper = getOr(yc, "w_slack_airspeed_upper", 1.0e4);
+  cb.w_slack_impact = getOr(yc, "w_slack_impact", 1.0e4);
+  cb.h_meas_seed = static_cast<unsigned int>(
+      getOr(yc, "h_meas_seed", static_cast<double>(cb.h_meas_seed)));
   cb.de_min = getOr(yc, "de_min_deg", -28.6) * kDeg;
   cb.de_max = getOr(yc, "de_max_deg", 28.6) * kDeg;
   cb.Tddot_min = getOr(yc, "Tddot_min", -500.0);
   cb.Tddot_max = getOr(yc, "Tddot_max", 500.0);
+  cb.h_meas_stddev = getOr(yc, "h_meas_stddev", 0.0);
+  cb.h_lpf_tau = getOr(yc, "h_lpf_tau", 0.0);
 
   sc_.cbf_enabled = getOrB(root, "cbf_enabled", true);
   cb.enabled = cb.enabled && sc_.cbf_enabled;
+
+  // Optional scenario-level viscous-stall override (the plant default lives in
+  // aircraft.yaml, OFF). Lets a stall-demo scenario enable the NACA 4414 stall
+  // model without a duplicate aircraft config.
+  YAML::Node yst = root["stall"];
+  if (yst) {
+    ac_.stall.enabled = getOrB(yst, "enabled", ac_.stall.enabled);
+    ac_.stall.severity = getOr(yst, "severity", ac_.stall.severity);
+  }
 
   sc_.dt = getOr(root, "dt", 0.01);
   sc_.t_max = getOr(root, "t_max", 60.0);
@@ -210,12 +226,25 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   AirspeedUpperBarrier baup{sc_.cbf.Vmax_air};
   // bdesc is rebuilt each step: a_brk(V,gamma) depends on the (frozen) aero + V.
 
+  // Altitude-sensor model: the CBF acts on a noisy, low-pass-filtered measurement
+  // h_filt(h + N(0,sigma^2)), while the plant (RK4) and the CSV diagnostics keep
+  // the true state. Fixed seed so a given scenario is reproducible run-to-run
+  // (deterministic plant + noise).
+  std::mt19937 h_rng(sc_.cbf.h_meas_seed);
+  std::normal_distribution<double> h_noise(0.0, sc_.cbf.h_meas_stddev);
+  // First-order low-pass: alpha = dt/(tau+dt); tau=0 => alpha=1 => pass-through.
+  // Seed the filter state at the true initial altitude (no startup transient).
+  const double h_lpf_alpha =
+      sc_.cbf.h_lpf_tau > 0.0 ? dt / (sc_.cbf.h_lpf_tau + dt) : 1.0;
+  double h_filt = sc_.X0[LH];
+
   std::ofstream csv(csv_path);
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
          "de_nom,Tddot_nom,b_descent,b_airspeed,b_airspeed_upper,theta_cmd_deg,recovered,"
          "psi1_desc,psi2_desc,psi1_air,psi2_air,psi1_airup,psi2_airup,"
          "res_desc,res_air,res_airup,res_tmin,res_tmax,"
-         "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp\n";
+         "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp,h_meas,h_filt,"
+         "n_rows_dropped,hard_dropped,desc_infeasible,CL,CD,dCL_stall\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -226,11 +255,30 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   double min_psi1d = 1e30, min_psi2d = 1e30, min_psi1a = 1e30, min_psi2a = 1e30;
   double min_psi1au = 1e30, min_psi2au = 1e30;
   double min_psi1i = 1e30, min_psi2i = 1e30;  // impact (over the active z<z_gate window)
+  // Diagnostic-integrity + filter-health accounting: non-finite psi samples must
+  // not be silently swallowed by std::min (NaN < x is false), and dropped HARD
+  // barrier rows must be visible rather than masquerading as recoveries=0.
+  int nan_desc = 0, nan_air = 0, nan_airup = 0, nan_imp = 0;
+  int steps_rows_dropped = 0, steps_hard_dropped = 0, steps_desc_infeasible = 0;
+  auto gmin = [](double& mn, double v) { if (std::isfinite(v)) mn = std::min(mn, v); };
 
   for (int k = 0; k <= nsteps; ++k) {
     const LonCtrlVec U_nom = nominal.step(X, dt);
-    const LonCtrlVec U = filter.filter(U_nom, X, table_, *mixing_, ac_);
+    // Sensor chain: true h -> add noise -> low-pass -> CBF. The true X is still
+    // integrated below and used for the diagnostics/touchdown test.
+    double h_meas = X[LH];
+    if (sc_.cbf.h_meas_stddev > 0.0) h_meas += h_noise(h_rng);
+    h_filt += h_lpf_alpha * (h_meas - h_filt);
+    LonStateVec X_meas = X;
+    X_meas[LH] = h_filt;
+    const LonCtrlVec U = filter.filter(U_nom, X_meas, table_, *mixing_, ac_);
     if (filter.lastRecovery()) ++recoveries;
+    const int n_rows_dropped = filter.lastDroppedRows();
+    const bool hard_dropped = filter.lastHardDropped();
+    const bool desc_infeasible = filter.lastDescentInfeasible();
+    if (n_rows_dropped > 0) ++steps_rows_dropped;
+    if (hard_dropped) ++steps_hard_dropped;
+    if (desc_infeasible) ++steps_desc_infeasible;
 
     const double alpha = X[LTH] - X[LGAM];
     const double sink = -X[LV] * std::sin(X[LGAM]);  // positive down
@@ -240,8 +288,25 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     // membership condition. psi_1 = L_f b + c1 b; psi_2 = L_f^2 b + (c1+c2)L_f b
     // + c1 c2 b.
     const AeroLocal aero = makeAeroLocal(table_, *mixing_, ac_, X[LV], alpha);
-    const DescentBarrier bdesc =
-        makeDescentBarrier(aero, sc_.cbf.v_safe, sc_.cbf.CLmax, X[LV]);
+    // Realized wind-axis aero coefficients (mirrors LonDrift) for the trace,
+    // including the viscous-stall lift delta dCL_stall (0 when stall disabled).
+    const double mach_d = X[LV] / aero.a_sound;
+    const double qhat_d = (X[LQ] * aero.cref / 2.0) / X[LV];
+    const double CFx_d = aero.off_CFx + aero.dAlpha_CFx * alpha +
+                         aero.dMach_CFx * mach_d + aero.dQ_CFx * qhat_d;
+    const double CFz_d = aero.off_CFz + aero.dAlpha_CFz * alpha +
+                         aero.dMach_CFz * mach_d + aero.dQ_CFz * qhat_d;
+    double CL_d = -CFx_d * std::sin(alpha) + CFz_d * std::cos(alpha);
+    double CD_d = CFx_d * std::cos(alpha) + CFz_d * std::sin(alpha) + aero.parasite_CD0;
+    const double CL_att = CL_d;  // pre-stall (VSPAERO) lift, for the dCL_stall trace
+    if (aero.stall_on) {         // blend toward the Viterna post-stall curve
+      const double w = aero.off_w + aero.dAlpha_w * alpha;
+      CL_d = (1.0 - w) * CL_d + w * (aero.off_CLp + aero.dAlpha_CLp * alpha);
+      CD_d = (1.0 - w) * CD_d + w * (aero.off_CDp + aero.dAlpha_CDp * alpha);
+    }
+    const double dCL_stall = CL_d - CL_att;  // lift lost to stall (<= 0)
+    const DescentBarrier bdesc = makeDescentBarrier(
+        aero, sc_.cbf.v_safe, sc_.cbf.CLmax, X[LV], sc_.cbf.h_flare);
     const auto ldd = barrierLie<3>(aero, bdesc, X);
     const auto lda = barrierLie<3>(aero, bair, X);
     const auto lau = barrierLie<3>(aero, baup, X);
@@ -254,12 +319,12 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const double psi2a = lda.Lf[2] + (ca[0] + ca[1]) * lda.Lf[1] + ca[0] * ca[1] * lda.Lf[0];
     const double psi1au = lau.Lf[1] + cau[0] * lau.Lf[0];
     const double psi2au = lau.Lf[2] + (cau[0] + cau[1]) * lau.Lf[1] + cau[0] * cau[1] * lau.Lf[0];
-    min_psi1d = std::min(min_psi1d, psi1d);
-    min_psi2d = std::min(min_psi2d, psi2d);
-    min_psi1a = std::min(min_psi1a, psi1a);
-    min_psi2a = std::min(min_psi2a, psi2a);
-    min_psi1au = std::min(min_psi1au, psi1au);
-    min_psi2au = std::min(min_psi2au, psi2au);
+    gmin(min_psi1d, psi1d); gmin(min_psi2d, psi2d);
+    gmin(min_psi1a, psi1a); gmin(min_psi2a, psi2a);
+    gmin(min_psi1au, psi1au); gmin(min_psi2au, psi2au);
+    if (!std::isfinite(psi1d) || !std::isfinite(psi2d)) ++nan_desc;
+    if (!std::isfinite(psi1a) || !std::isfinite(psi2a)) ++nan_air;
+    if (!std::isfinite(psi1au) || !std::isfinite(psi2au)) ++nan_airup;
 
     // Impact-load barrier (degree 2). psi minima are tracked only over the active
     // window (z < z_gate), where the row is actually assembled/enforced.
@@ -275,8 +340,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const bool impact_active = X[LH] < sc_.cbf.z_gate && -X[LGAM] > 0.0 &&
                                (X[LTH] - sc_.cbf.tau_keel) > 0.0;
     if (impact_active) {
-      min_psi1i = std::min(min_psi1i, psi1i);
-      min_psi2i = std::min(min_psi2i, psi2i);
+      gmin(min_psi1i, psi1i); gmin(min_psi2i, psi2i);
+      if (!std::isfinite(psi1i) || !std::isfinite(psi2i)) ++nan_imp;
     }
     // n_peak and kappa for the trace, recomputed from the frozen barrier.
     const double gamma0_l = -X[LGAM];
@@ -316,7 +381,10 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         << psi1a << ',' << psi2a << ',' << psi1au << ',' << psi2au << ','
         << res_d << ',' << res_a << ',' << res_au << ',' << res_tl
         << ',' << res_tu << ',' << bimp(xa) << ',' << n_peak << ',' << kappa_l
-        << ',' << psi1i << ',' << psi2i << ',' << res_i << '\n';
+        << ',' << psi1i << ',' << psi2i << ',' << res_i << ',' << h_meas
+        << ',' << h_filt << ',' << n_rows_dropped << ','
+        << (hard_dropped ? 1 : 0) << ',' << (desc_infeasible ? 1 : 0) << ','
+        << CL_d << ',' << CD_d << ',' << dCL_stall << '\n';
 
     if (X[LH] <= 0.0 && k > 0) {
       td.reached = true;
@@ -340,12 +408,26 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
               << X[LH] << ")\n";
   }
   std::cout << "  CBF feasibility recoveries: " << recoveries << "\n";
+  // Row-assembly faults: a dropped HARD row is an unannunciated loss of a safety
+  // guarantee, so surface it explicitly -- recoveries=0 alone does NOT imply health
+  // (dropping the binding row makes the QP trivially feasible).
+  std::cout << "  CBF row-assembly faults: " << steps_rows_dropped
+            << " step(s) dropped >=1 barrier row (" << steps_hard_dropped
+            << " dropped a HARD row); descent envelope infeasible (a_brk<=0) on "
+            << steps_desc_infeasible << " step(s)\n";
+  auto nanTag = [](int k) {
+    return k > 0 ? "  [" + std::to_string(k) + " non-finite sample(s) excluded]"
+                 : std::string();
+  };
   std::cout << "  HOCBF nested-function minima (must be >= 0 for the guarantee):\n";
-  std::cout << "    descent : min psi1=" << min_psi1d << "  min psi2=" << min_psi2d << "\n";
-  std::cout << "    airspeed: min psi1=" << min_psi1a << "  min psi2=" << min_psi2a << "\n";
-  std::cout << "    air-upr : min psi1=" << min_psi1au << "  min psi2=" << min_psi2au << "\n";
+  std::cout << "    descent : min psi1=" << min_psi1d << "  min psi2=" << min_psi2d
+            << nanTag(nan_desc) << "\n";
+  std::cout << "    airspeed: min psi1=" << min_psi1a << "  min psi2=" << min_psi2a
+            << nanTag(nan_air) << "\n";
+  std::cout << "    air-upr : min psi1=" << min_psi1au << "  min psi2=" << min_psi2au
+            << nanTag(nan_airup) << "\n";
   std::cout << "    impact  : min psi1=" << min_psi1i << "  min psi2=" << min_psi2i
-            << "  (z < z_gate=" << sc_.cbf.z_gate << " m)\n";
+            << "  (z < z_gate=" << sc_.cbf.z_gate << " m)" << nanTag(nan_imp) << "\n";
   std::cout << "  trace -> " << csv_path << "\n";
   return td;
 }
