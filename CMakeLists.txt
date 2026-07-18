@@ -144,6 +144,7 @@ include(Catch)
 
 add_executable(unit_tests
   test/test_aero_table.cpp
+  test/test_dynamics.cpp
   test/test_trim.cpp
   test/test_linear_model.cpp
   test/test_cbf.cpp
