@@ -21,10 +21,15 @@
 // 3) drops out of the degree-2 HOCBF row, so the flare enforces it. Thrust still
 // bounds impact load through the descent/sink-rate barrier (spec section 4).
 //
-// K0 and the local-affine model Clf(kappa) ~ Clf0 + dClf_dk*(kappa - kappa0) are
-// FROZEN at the eval point by makeImpactLoadBarrier (like the other factories),
-// so the templated barrier is smooth and needs no cbrt/pow in the Taylor path,
-// while the attitude coupling stays live through kappa(tau, gamma0).
+// K0(tau) and Clf(kappa) are FROZEN at the eval point by makeImpactLoadBarrier
+// as LOCAL AFFINE models (value + first derivative), so the templated barrier
+// is smooth and needs no cbrt/pow in the Taylor path while its FIRST-ORDER
+// state sensitivities are exact. Freezing K0's VALUE alone is not enough: at
+// landing trims d(ln K0)/dtau ~ -(1/3)cot(tau) partially cancels the retained
+// kappa channel (elasticity ~0.6 * cot(tau)), so a value-only freeze inflates
+// d(n_peak)/d(theta) -- and with it the hard row's elevator coefficient --
+// by ~2x. See test "impact barrier frozen model preserves the true attitude
+// gradient".
 //
 // NOTE: Clf is the LOAD-factor coefficient (C_l), NOT the aerodynamic max-lift
 // coefficient CLmax (C_L) used by the descent barrier -- distinct quantity.
@@ -57,7 +62,8 @@ inline ClfLocal clfLookup(double kappa) {
 
 struct ImpactLoadBarrier {
   double n_limit{0};
-  double K0{0};                  // (alpha_hull / (W g^2))^(1/3), frozen
+  double K00{0}, dK0_dtau{0};    // local-affine hull coef (alpha_hull/(W g^2))^(1/3)
+  double tau0{0};                //   about the clamped anchor tau0
   double Clf0{0}, dClf_dk{0};    // local-affine load-factor coef about kappa0
   double kappa0{0};
   double Nb{0}, zs{0};           // Phi(z) = Nb (1 - exp(-z / zs))
@@ -80,14 +86,15 @@ struct ImpactLoadBarrier {
     const T sg0 = sqrt(sin(gamma0) * sin(gamma0) + eps_g0 * eps_g0);
     const T kappa = sin(tau) * cos(tau + gamma0) / sg0;
     const T Clf = Clf0 + dClf_dk * (kappa - kappa0);
-    const T n_peak = (K0 * Clf) * (ydot0 * ydot0);
+    const T K0t = K00 + dK0_dtau * (tau - tau0);
+    const T n_peak = (K0t * Clf) * (ydot0 * ydot0);
     const T Phi = Nb * (1.0 - exp(X[LH] * (-1.0 / zs)));
     return (n_limit - n_peak) + Phi;
   }
 };
 
-// Build the barrier, freezing K0 and the local Clf(kappa) model from the state
-// (V, theta, gamma in X). beta is the hull dead-rise in radians.
+// Build the barrier, freezing the local-affine K0(tau) and Clf(kappa) models
+// from the state (V, theta, gamma in X). beta is the hull dead-rise in radians.
 inline ImpactLoadBarrier makeImpactLoadBarrier(const AeroLocal& a, double n_limit,
                                                double beta, double rho_water,
                                                double Nb, double zs,
@@ -126,7 +133,17 @@ inline ImpactLoadBarrier makeImpactLoadBarrier(const AeroLocal& a, double n_limi
   const double alpha_hull = f_beta * f_beta * phi_A * rho_water * M_PI /
                             (6.0 * std::sin(tau0) * std::cos(tau0) * std::cos(tau0));
   const double W = a.mass * a.g;
-  b.K0 = std::cbrt(alpha_hull / (W * a.g * a.g));
+  b.K00 = std::cbrt(alpha_hull / (W * a.g * a.g));
+  // Local-affine slope, dK0/dtau = (K0/3) d(ln alpha_hull)/dtau, anchored at the
+  // clamped tau0 (bounds |dK0_dtau| via the cot term; mirrors the kappa0 clamp).
+  // d(ln alpha_hull)/dtau = -cot(tau) + 2 tan(tau) - sec^2(tau)/(2 tan(beta) phi_A)
+  // from -ln sin(tau), -2 ln cos(tau), and ln phi_A. The cbrt/tan stay here in
+  // the factory (double math), out of the Taylor path.
+  const double ct0 = std::cos(tau0);
+  const double dlnA = -1.0 / std::tan(tau0) + 2.0 * std::tan(tau0) -
+                      1.0 / (ct0 * ct0 * 2.0 * std::tan(beta) * phi_A);
+  b.dK0_dtau = b.K00 * dlnA / 3.0;
+  b.tau0 = tau0;
   return b;
 }
 

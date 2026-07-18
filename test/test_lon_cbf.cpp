@@ -372,10 +372,46 @@ TEST_CASE("impact barrier value matches its closed form", "[lon_cbf]") {
   const double kappa = std::sin(tau) * std::cos(tau + gamma0) / sg0;
   const double ydot0 = -V * std::sin(gamma);
   const double Clf = b.Clf0 + b.dClf_dk * (kappa - b.kappa0);
-  const double n_peak = b.K0 * ydot0 * ydot0 * Clf;
+  const double K0t = b.K00 + b.dK0_dtau * (tau - b.tau0);
+  const double n_peak = K0t * ydot0 * ydot0 * Clf;
   const double Phi = Nb * (1.0 - std::exp(-h / zs));
   CHECK(b(toArray(X)) == Approx((n_limit - n_peak) + Phi).epsilon(1e-12));
   CHECK((M_PI / (2.0 * beta) - 1.0) == Approx(3.0).epsilon(1e-9));  // f(beta), eq 45
+}
+
+// The frozen barrier's attitude gradient must match the TRUE model -- n_peak
+// with the factory re-run (re-frozen) at each perturbed state -- to within the
+// local-affine curvature error. A value-only K0 freeze fails this by ~2.2x at
+// landing trims: dropping dK0/dtau = (K0/3) d(ln alpha_hull)/dtau ~ -(K0/3)cot(tau)
+// keeps only the (partially cancelled) kappa channel, inflating d(n_peak)/d(theta)
+// and with it the elevator coefficient of the only HARD safety row.
+TEST_CASE("impact barrier frozen model preserves the true attitude gradient",
+          "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -3.0 * kDeg, theta = 4.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  auto stateAt = [&](double th) {
+    LonStateVec X;
+    X << 4.0, V, gamma, th, 0.0, 2.0, 0.0;
+    return X;
+  };
+  // n_limit = 0, Nb = 0  =>  b = -n_peak.
+  auto makeAt = [&](double th) {
+    return makeImpactLoadBarrier(a, 0.0, 22.5 * kDeg, 1000.0, 0.0, 2.0, 0.0,
+                                 0.02, stateAt(th));
+  };
+  const double h = 1e-5;
+  // True gradient: rebuild (re-freeze) the barrier at each perturbed state.
+  const double n_true_p = -makeAt(theta + h)(toArray(stateAt(theta + h)));
+  const double n_true_m = -makeAt(theta - h)(toArray(stateAt(theta - h)));
+  const double g_true = (n_true_p - n_true_m) / (2.0 * h);
+  // Frozen gradient: ONE barrier built at theta, differentiated in theta --
+  // the sensitivity the Lie engine sees.
+  const ImpactLoadBarrier bf = makeAt(theta);
+  const double g_frozen = (-bf(toArray(stateAt(theta + h))) +
+                           bf(toArray(stateAt(theta - h)))) / (2.0 * h);
+  REQUIRE(g_true > 0.0);  // pitch-up raises the predicted load at this state
+  CHECK(g_frozen == Approx(g_true).epsilon(1e-3));
 }
 
 // Relative degree: a degree-2 HOCBF. The elevator appears in L_g L_f b; thrust

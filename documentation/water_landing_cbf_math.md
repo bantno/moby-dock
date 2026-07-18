@@ -152,10 +152,16 @@ b_\text{imp}(X) = \big(n_\text{limit}-n_\text{peak}(\tau,\gamma_0,\dot y_0)\big)
 \qquad \Phi(z)=N_b\big(1-e^{-z/z_s}\big).
 $$
 At $z=0$ this is the true load constraint $n_\text{limit}-n_\text{peak}\ge0$; aloft $\Phi\to N_b$
-makes it trivially satisfied (touchdown-only). $K_0=(\alpha_\text{hull}/Wg^2)^{1/3}$ and a
-local-affine $C_{lf}(\kappa)\approx C_{lf,0}+\tfrac{dC_{lf}}{d\kappa}(\kappa-\kappa_0)$ are
-**frozen** at the evaluation point so the templated barrier is smooth (no $\sqrt[3]{\cdot}$ in
-the Taylor jet) while the attitude coupling stays live through $\kappa$.
+makes it trivially satisfied (touchdown-only). $K_0(\tau)=(\alpha_\text{hull}(\tau)/Wg^2)^{1/3}$ and
+$C_{lf}(\kappa)$ are **frozen** at the evaluation point as **local-affine models** (value *and*
+first derivative: $K_0\approx K_{0,0}+\tfrac{dK_0}{d\tau}(\tau-\tau_0)$ with
+$\tfrac{dK_0}{d\tau}=\tfrac{K_0}{3}\big(-\cot\tau+2\tan\tau-\tfrac{\sec^2\tau}{2\tan\beta\,\phi(A)}\big)$,
+and $C_{lf}\approx C_{lf,0}+\tfrac{dC_{lf}}{d\kappa}(\kappa-\kappa_0)$), so the templated barrier is
+smooth (no $\sqrt[3]{\cdot}$ in the Taylor jet) while the full first-order attitude coupling stays
+live. Freezing the $K_0$ *value* alone is not enough: at landing trims
+$\tfrac{d\ln K_0}{d\tau}\approx-\tfrac{1}{3}\cot\tau$ partially cancels the retained $\kappa$
+channel and its omission inflates $\partial n_\text{peak}/\partial\theta$ (hence the hard row's
+elevator coefficient) by $\sim2\times$.
 
 **Relative degree & the affine-row obstruction.** $b_\text{imp}$ is relative degree **2 via
 the elevator** ($\theta\!\to\!q\!\to\!\delta_e$, since $n_\text{peak}$ depends on $\theta$
