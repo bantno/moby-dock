@@ -1,0 +1,75 @@
+# =============================================================================
+# POWERED stall-recovery demo: energy-deficient pull-up at near-idle thrust,
+# caught by the stall/AoA row (pitch) PLUS the opt-in energy floor (throttle) --
+# the full pilot recovery, each half from the row that owns the actuator.
+#
+# Setup: T_set = 0.3 N (idle) and an aggressive climb command. The pull-up
+# bleeds airspeed with no power to pay for it. The stall row caps alpha; the
+# energy-floor row (here g_floor = g: a pure airspeed floor V >= V_floor, the
+# gentle, always-tangent member of the E-floor family) catches the sag and --
+# with the range-scaled thrust price w_Tddot -- brings the throttle up smoothly:
+# T ramps ~2.4 -> ~16 N and the aircraft climbs away at the stall margin.
+#
+# TWO LESSONS BAKED INTO THESE NUMBERS (found the hard way):
+#  * w_Tddot (control price): with the default identity cost, 1 N/s^2 of Tddot
+#    is priced like 1 rad of elevator, so the QP serves every mixed-authority
+#    row with pitch alone (elevator row coefficients are ~1e3-1e4x thrust's) and
+#    the floor gets satisfied by diving while altitude lasts. Pricing thrust by
+#    its actuator range (w = 1/u_max^2 ~ 1e-6..4e-6) lets it participate early
+#    and smoothly. Elevator keeps its unit price -- raising w_de instead
+#    destabilizes the stall row's hold on the elevator.
+#  * Keep the floor GENTLY BINDING (g_floor = g, moderate V_floor, c ~ [3,3,3]).
+#    A deeply-violated floor (e.g. the g_floor = 0 true-energy form sized to
+#    bind mid-departure) produces a row whose raw psi units are ~100x the other
+#    rows'; its quadratic slack then out-muscles the nominally higher-priority
+#    stall row (slack weights compare RAW units, not intent) and the Tddot
+#    slamming drives the thrust chain into genuine thrust-row/box infeasibility
+#    (best-effort storms). Softness ordering across rows of different relative
+#    degree is only meaningful while every row stays near-tangent.
+#
+#   build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml \
+#       data/lon_stall_recovery_cbf_efloor.yaml stall_efloor_on.csv
+#   (floor-off baseline: same file with energy_floor: false)
+#   python3 scripts/plot_energy_floor.py stall_efloor_on.csv stall_efloor_off.csv \
+#       figures/stall_recovery_efloor.png
+#
+# NOTE: the floor row is the opt-in reversal of the recovery set's
+# no-airspeed-floor design decision -- it is OFF by default everywhere else.
+# =============================================================================
+
+V_app: 14.0
+gamma_app_deg: 22.0    # commanded steep climb -- unsustainable at idle thrust
+dt:    0.01
+t_max: 40.0
+cbf_enabled: true
+
+stall:
+  enabled: true
+  severity: 1.0
+
+initial:
+  h0:          30.0
+  dV:           0.0
+  dgamma_deg:   0.0
+  dtheta_deg:   0.0
+
+nominal:
+  T_set: 0.3                 # near-idle: the energy-deficient stall case
+  Kp_T:  4.0
+  Kd_T:  4.0
+  Kp_gamma: 2.0
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 32.0
+  Kp_theta: 1.0
+  Kq:       0.25
+
+cbf:
+  # Everything else at defaults (stall/energy-ceiling/nose-up/impact/thrust rows).
+  energy_floor: true         # opt-in powered-recovery row (SOFT, w = 1e4)
+  V_floor: 12.0              # ~1.24 V_stall(CLmax) = 9.7 m/s
+  g_floor: 9.80665           # = g -> pure airspeed floor (gentle, stays tangent)
+  c_energy_floor: [3.0, 3.0, 3.0]
+  # Thrust priced by actuator range so the QP spreads mixed-authority
+  # corrections across both controls (see header). Elevator keeps unit price.
+  w_de: 1.0
+  w_Tddot: 1.0e-6

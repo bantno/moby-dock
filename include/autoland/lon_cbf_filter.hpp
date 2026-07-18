@@ -35,6 +35,10 @@ struct LonCBFConfig {
   bool stall_hard{false};    // stall / nose-up / energy are all SOFT (slacked)
   bool noseup_hard{false};
   bool energy_hard{false};
+  // Energy FLOOR (powered stall recovery; see hocbf.hpp). OPT-IN: default off
+  // preserves the recovery set's no-airspeed-floor design.
+  bool energy_floor{false};
+  bool energy_floor_hard{false};
 
   // Stall / nose-up / energy-corridor parameters. Angles stored in RADIANS (the
   // YAML gives degrees). The AoA barrier replaces the old airspeed floor as the
@@ -52,10 +56,15 @@ struct LonCBFConfig {
                           // Size so E_cap(h0) >= E0 (starts satisfied):
                           //   g_eff >= g + (V0^2 - V_td_max^2)/(2 h0).
   double Tmax{12.0};      // max thrust [N]
+  double V_floor{11.0};   // energy-floor airspeed at h = 0 [m/s] (~1.1 V_stall)
+  double g_floor{9.80665};  // floor slope [m/s^2]: = g -> pure airspeed floor
+                            // V >= V_floor everywhere; < g -> relaxes aloft as
+                            // V >= sqrt(V_floor^2 + 2(g_floor - g)h).
 
   std::array<double, 2> c_stall{4.0, 4.0};          // class-K gains (deg 2)
   std::array<double, 2> c_noseup{2.0, 2.0};         // (deg 2, gated near surface)
   std::array<double, 3> c_energy{2.0, 2.0, 2.0};    // (deg 3)
+  std::array<double, 3> c_energy_floor{2.0, 2.0, 2.0};  // (deg 3, opt-in floor)
   std::array<double, 2> c_thrust_min{4.0, 4.0};     // {c11, c12} (deg 2)
   std::array<double, 2> c_thrust_max{4.0, 4.0};     // {c21, c22}
 
@@ -83,8 +92,20 @@ struct LonCBFConfig {
   // feasible steps, firing best-effort spuriously.) HARD barriers (the *_hard
   // flags, and the thrust-limit rows) get NO slack; if the hard set is infeasible
   // the filter falls back to a best-effort minimum-violation solve.
+  // Per-control tracking weights, J_u = 1/2 [w_de (de - de_nom)^2 +
+  // w_Tddot (Tddot - Tddot_nom)^2]. DEFAULT IDENTITY (backward compatible).
+  // The identity cost prices 1 rad of elevator equal to 1 N/s^2 of Tddot, so on
+  // any mixed-authority row the QP corrects with the elevator alone (its row
+  // coefficients run ~1e3-1e4x thrust's) and thrust only moves once the
+  // elevator saturates -- late and slammed. Range-scaled weights (w = 1/u_max^2:
+  // w_de ~ 4, w_Tddot ~ 4e-6) price a full-scale deflection of each actuator
+  // equally, letting thrust participate early and smoothly (the powered half of
+  // the stall recovery, with the opt-in energy floor).
+  double w_de{1.0}, w_Tddot{1.0};
+
   double w_slack_stall{1.0e5};   // firmest soft row (protect the stall recovery)
   double w_slack_energy{1.0e4};  // medium
+  double w_slack_energy_floor{1.0e4};  // same tier as the ceiling (opt-in row)
   double w_slack_noseup{1.0e3};  // softest: yields to stall on the shared elevator
   double w_slack_impact{1.0e4};  // unused while impact_hard=true; kept for testing
 

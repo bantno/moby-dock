@@ -126,6 +126,27 @@ TEST_CASE("recovery barriers: closed form + relative degree", "[lon_cbf]") {
     CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);     // elevator enters at degree 3
     CHECK(std::abs(lie.LgLf(0, LTDDOT)) > 1e-9);  // thrust enters at degree 3
   }
+  SECTION("energy floor (deg 3, both controls, authority flipped vs ceiling)") {
+    const double V_floor = 11.0, g_floor = 9.0;
+    const EnergyFloorBarrier b = makeEnergyFloorBarrier(a, V_floor, g_floor);
+    CHECK(b(toArray(X)) == Approx(0.5 * (V * V - V_floor * V_floor) +
+                                  (a.g - g_floor) * X[LH])
+                               .epsilon(1e-9));
+    auto lie = barrierLie<3>(a, b, X);
+    // d/dt[1/2(V^2 - Vfl^2) + (g - g_floor)h] = V*Vdot + (g - g_floor)*hdot.
+    CHECK(lie.Lf[1] ==
+          Approx(V * xd[LV] + (a.g - g_floor) * xd[LH]).epsilon(1e-7));
+    // Thrust column L_g L_f^2 b = +V cos(alpha)/m > 0 exactly (only the 1/2 V^2
+    // term reaches Tdot; the h term's L_f^2 has no Tdot dependence): raising
+    // Tddot RAISES the floor's psi -- throttle-UP authority, the exact negative
+    // of the ceiling's thrust column. (The elevator columns are NOT negatives:
+    // the h terms differ and L_g L_f^2 h != 0 through the q-rate aero derivs.)
+    CHECK(lie.LgLf(0, LTDDOT) == Approx(V * std::cos(alpha) / a.mass).epsilon(1e-9));
+    const EnergyBarrier bc = makeEnergyBarrier(a, 14.0, 16.0);
+    auto lc = barrierLie<3>(a, bc, X);
+    CHECK(lie.LgLf(0, LTDDOT) == Approx(-lc.LgLf(0, LTDDOT)).epsilon(1e-9));
+    CHECK(std::abs(lie.LgLf(0, LDE)) > 1e-6);  // elevator enters at degree 3
+  }
 }
 
 // The generic HOCBF builder must reproduce the hand-expanded linear-class-K
@@ -226,6 +247,46 @@ TEST_CASE("lon filter enforces the energy barrier when hard", "[lon_cbf]") {
   LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
   CHECK_FALSE(filter.lastRecovery());
   CHECK((U - Un).norm() > 1e-6);
+  const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
+  CHECK(lhs <= row.rhs + 1e-6);
+}
+
+// The opt-in energy FLOOR must hold when the nominal cuts power while slow: the
+// filter corrects toward MORE thrust (the powered stall recovery channel the
+// degree-2 stall row cannot command).
+TEST_CASE("lon filter enforces the energy floor when hard (throttle-up)", "[lon_cbf]") {
+  Setup s;
+  // Slow, level-ish: V just above the pure airspeed floor so the row is active.
+  const double V = 11.5, gamma = -1.0 * kDeg, theta = 4.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 20.0, V, gamma, theta, 0.0, 2.0, 0.0;
+
+  LonCBFConfig cfg;
+  cfg.energy_floor = true; cfg.energy_floor_hard = true;
+  cfg.V_floor = 11.0; cfg.g_floor = a.g;  // pure airspeed floor
+  cfg.stall = false; cfg.noseup = false; cfg.energy = false; cfg.impact = false;
+  cfg.thrust_limits = false;
+  LonCBFFilter filter(cfg);
+
+  const EnergyFloorBarrier b = makeEnergyFloorBarrier(a, cfg.V_floor, cfg.g_floor);
+  auto lie = barrierLie<3>(a, b, X);
+  std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+  HocbfRow row = hocbfRow(Lf, lie.LgLf,
+                          {cfg.c_energy_floor[0], cfg.c_energy_floor[1], cfg.c_energy_floor[2]});
+  const double a_de = row.a(0, LDE), a_td = row.a(0, LTDDOT);
+  REQUIRE(std::abs(a_td) > 1e-9);
+  CHECK(a_td < 0.0);  // row is a.U <= rhs: negative Tddot coeff => thrust RELAXES it
+
+  // Most-violating in-box control: chop the throttle (and push the bad elevator).
+  LonCtrlVec Un;
+  Un << (a_de > 0 ? cfg.de_max : cfg.de_min),
+        (a_td > 0 ? cfg.Tddot_max : cfg.Tddot_min);
+  REQUIRE(a_de * Un[LDE] + a_td * Un[LTDDOT] > row.rhs + 1e-6);
+
+  LonCtrlVec U = filter.filter(Un, X, s.table, s.mx, s.cfg);
+  CHECK_FALSE(filter.lastRecovery());
+  CHECK(U[LTDDOT] > Un[LTDDOT] + 1e-6);  // corrected toward MORE thrust
   const double lhs = row.a(0, LDE) * U[LDE] + row.a(0, LTDDOT) * U[LTDDOT];
   CHECK(lhs <= row.rhs + 1e-6);
 }

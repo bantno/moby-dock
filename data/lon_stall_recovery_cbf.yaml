@@ -1,0 +1,43 @@
+# =============================================================================
+# Stall-RECOVERY demo: the CBF-QP catches the departure of lon_stall_recovery.yaml.
+#
+# Identical aggressive low-altitude pitch-up on the NACA 4414 viscous-stall plant
+# (same nominal, same stall overlay, same energy state), but with the safety
+# filter ENABLED: as alpha approaches alpha_lim = alpha_stall - margin = 9 deg,
+# the soft-but-stiff stall row (w = 1e5) overrides the nominal's nose-up command
+# and drives the elevator nose-down -- the pilot stall recovery -- so the wing
+# never departs. Run against the CBF-off scenario and compare:
+#
+#   build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml \
+#       data/lon_stall_recovery.yaml     stall_off.csv     # raw departure
+#   build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml \
+#       data/lon_stall_recovery_cbf.yaml stall_on.csv      # recovery
+#   python3 scripts/plot_stall_recovery.py stall_on.csv stall_off.csv \
+#       figures/stall_recovery_compare.png
+# =============================================================================
+
+V_app: 16.0
+gamma_app_deg: 22.0    # commanded steep climb the thrust/energy cannot hold
+dt:    0.01
+t_max: 40.0            # long enough to show the sustained post-recovery flight
+cbf_enabled: true      # <- the one functional change vs lon_stall_recovery.yaml
+
+stall:
+  enabled: true        # same viscous-stall plant: departure is really possible
+  severity: 1.0
+
+initial:
+  h0:          60.0
+  dV:           0.0
+  dgamma_deg:   0.0
+  dtheta_deg:   0.0
+
+nominal:
+  T_set: 3.0                 # low thrust: cannot sustain the commanded climb
+  Kp_T:  4.0
+  Kd_T:  4.0
+  Kp_gamma: 2.0
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 32.0    # enough pitch authority to drive AoA past stall
+  Kp_theta: 1.0
+  Kq:       0.25

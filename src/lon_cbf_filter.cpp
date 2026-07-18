@@ -72,6 +72,19 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
     const std::vector<double> c(cfg_.c_energy.begin(), cfg_.c_energy.end());
     pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.energy_hard, cfg_.w_slack_energy);
   }
+  // Opt-in energy FLOOR (powered stall recovery): degree 3 like the ceiling but
+  // with flipped authority signs, so when it binds the QP throttles UP / noses
+  // DOWN -- the thrust channel the degree-2 stall row cannot reach.
+  if (cfg_.energy_floor) {
+    const EnergyFloorBarrier b =
+        makeEnergyFloorBarrier(aero, cfg_.V_floor, cfg_.g_floor);
+    auto lie = barrierLie<3>(aero, b, X);
+    std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
+    const std::vector<double> c(cfg_.c_energy_floor.begin(),
+                                cfg_.c_energy_floor.end());
+    pushHocbf(hocbfRow(Lf, lie.LgLf, c), cfg_.energy_floor_hard,
+              cfg_.w_slack_energy_floor);
+  }
   // Nose-up attitude floor, gated to the final h_noseup metres (mirrors the impact
   // z-gate below). Keeps theta above tau_keel so the impact model stays valid and
   // the touchdown is nose-up; SOFT with the lowest weight, so it yields to the
@@ -137,14 +150,14 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
 
     Mat P = Mat::Zero(n, n);
     Vec q = Vec::Zero(n);
-    // Control: identity-weighted tracking, 1/2 ||u - u_nom||^2 (regularizer only,
-    // no per-control weights). In the best-effort solve this is dominated by the
-    // hard-violation penalty below, so it only breaks ties among equally-safe
-    // controls (it never trades away safety).
-    P(LDE, LDE) = 1.0;
-    P(LTDDOT, LTDDOT) = 1.0;
-    q[LDE] = -U_nom[LDE];
-    q[LTDDOT] = -U_nom[LTDDOT];
+    // Control tracking, 1/2 (u - u_nom)^T W (u - u_nom) with W = diag(w_de,
+    // w_Tddot), identity by default (see LonCBFConfig). In the best-effort
+    // solve this is dominated by the hard-violation penalty below, so it only
+    // breaks ties among equally-safe controls (it never trades away safety).
+    P(LDE, LDE) = cfg_.w_de;
+    P(LTDDOT, LTDDOT) = cfg_.w_Tddot;
+    q[LDE] = -cfg_.w_de * U_nom[LDE];
+    q[LTDDOT] = -cfg_.w_Tddot * U_nom[LTDDOT];
     // Soft constraints: per-constraint QUADRATIC slack penalty 1/2 w_i delta_i^2
     // (P-term; q stays 0 on slacks). Larger w_i => firmer constraint. In the
     // best-effort solve, hard rows get a slack at the dominant kBestEffortHardPenalty

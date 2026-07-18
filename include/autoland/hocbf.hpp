@@ -87,6 +87,38 @@ inline EnergyBarrier makeEnergyBarrier(const AeroLocal& a, double V_td_max,
   return b;
 }
 
+// Total-specific-energy FLOOR (OPT-IN, default off -- the recovery set's stall
+// guard is AoA-based and deliberately carries no always-on airspeed floor; this
+// row exists to add the POWERED half of the stall recovery when wanted). Dual
+// of the ceiling above: E >= E_floor(h) = 1/2 V_floor^2 + g_floor h, i.e.
+//   b = E - E_floor(h) = 1/2 (V^2 - V_floor^2) + (g - g_floor) h >= 0
+//   <=>  V >= sqrt(V_floor^2 + 2 (g_floor - g) h).
+// g_floor = g degenerates to a pure airspeed floor V >= V_floor at every
+// height; g_floor < g relaxes the floor with altitude (potential energy in the
+// bank can be dived off for speed). Same structure as the ceiling: polynomial
+// in (V,h), relative degree 3 for BOTH controls -- but with OPPOSITE authority
+// signs, so when it binds the QP throttles UP and noses DOWN. This is exactly
+// the channel the (elevator-only, degree-2) stall row cannot command: thrust
+// enters that row's dot(b) only through the state T, two integrators upstream
+// of Tddot, so its degree-2 control column is identically zero.
+struct EnergyFloorBarrier {
+  double half_Vfl2{0};  // 1/2 V_floor^2
+  double dgfl{0};       // g - g_floor
+  template <class T>
+  T operator()(const std::array<T, NXA>& X) const {
+    const T V = X[LV];
+    return (0.5 * V * V) - half_Vfl2 + dgfl * X[LH];
+  }
+};
+inline EnergyFloorBarrier makeEnergyFloorBarrier(const AeroLocal& a,
+                                                 double V_floor,
+                                                 double g_floor) {
+  EnergyFloorBarrier b;
+  b.half_Vfl2 = 0.5 * V_floor * V_floor;
+  b.dgfl = a.g - g_floor;
+  return b;
+}
+
 // --- Lie-derivative bundle for a relative-degree-R barrier --------------------
 template <int R>
 struct BarrierLie {

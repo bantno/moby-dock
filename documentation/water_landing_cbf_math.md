@@ -104,6 +104,29 @@ $b_E$ is a **polynomial in $(V,h)$** ($C^\infty$, no $\sqrt{\cdot}$ — the airs
 
 **Relative Degree:** $3$ for **both** $\delta_e$ (through drag via $\alpha$) and $\ddot T$ (through the $T,\dot T$ chain) — the natural energy lever is thrust, with the elevator a weaker drag lever. Enforced with the shared degree-3 machinery ($L_F^3 b_E$ plus a two-column control row), class-$\mathcal K$ of size 3.
 
+### 3.3b Total-Energy Floor (opt-in — the powered stall recovery)
+Dual of §3.3, **off by default** (the recovery set deliberately carries no always-on airspeed
+floor; the AoA row is the stall guard). When enabled it adds the *throttle* half of the pilot
+stall recovery — the channel the degree-2 stall row cannot command ($\ddot T$'s column of that
+row is identically zero):
+$$
+b_{E,\text{fl}}(X) = E - E_\text{floor}(h) = \tfrac12\big(V^2 - V_\text{floor}^2\big) + (g-g_\text{floor})\,h \ge 0 ,
+$$
+degree 3 for both controls like the ceiling but with **opposite authority signs**: when it binds
+the QP throttles **up** and noses **down**. $g_\text{floor}=g$ degenerates to a pure airspeed
+floor $V\ge V_\text{floor}$ (gentle, stays near-tangent); $g_\text{floor}<g$ relaxes it with
+altitude. Two hard-won usage rules (`data/lon_stall_recovery_cbf_efloor.yaml`):
+* **Price thrust by its actuator range** ($w_{\ddot T}\sim 1/\ddot T_\text{max}^2$, elevator at
+  unit price). Under the default identity control cost the elevator's row coefficients
+  ($\sim10^3$–$10^4\times$ thrust's) make the QP satisfy the floor by *diving* while altitude
+  lasts, and thrust moves only at elevator saturation — late and slammed.
+* **Keep the floor gently binding.** A deeply-violated floor (e.g. a true-energy
+  $g_\text{floor}=0$ form sized to bind mid-departure) produces raw $\psi$ units $\sim100\times$
+  the other rows'; its quadratic slack then out-muscles the nominally higher-priority stall row
+  (slack weights compare **raw units**, not intent) and the $\ddot T$ slamming drives the thrust
+  chain into genuine thrust-row/box infeasibility. The soft-row priority ladder is only
+  meaningful while every row stays near-tangent — a known sharp edge of this formulation.
+
 ### 3.4 Actuator Limit / HOCBF-Validity Barriers
 Because thrust is an augmented state, its physical limits must be enforced via state-constrained CBFs. These are kept **hard** and serve double duty as the **actuator-effectiveness / HOCBF-validity guards**: every elevator-driven barrier's control coefficient scales with dynamic pressure ($L_{G_{\delta_e}}L_F b \propto \rho_a V^2$), so keeping the augmented thrust chain bounded (and the aircraft flying) preserves the relative-degree structure the whole formulation rests on. This is why no separate airspeed-floor CBF is needed.
 
