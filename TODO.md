@@ -103,6 +103,13 @@ barrier exists for.
       *Gust injection is now available*: MIL-F-8785C discrete gust (`wind_gust.hpp`, scenario
       `wind:` block), plant-only/unmeasured — the demo downdraft already blows through the
       V_td_max energy cap, so the sweep has its forcing lever.
+      *Partially exercised by the stall-recovery suite* (`scripts/stall_recovery_suite.py`,
+      2026-07): across slow-bleed / pull-into-stall / stalled-entry / gust cases the impact row
+      still never BINDS (touchdowns are ≤0.4 m/s, res_imp min ~+2 at its tightest); at stalled
+      entries ≤8 m the QP does hit best-effort feasibility recovery (enforced rows violated
+      transiently, outcome still soft). A scenario where n_peak → n_limit with the row cleanly
+      active remains to be constructed (likely needs the descent-shaping rows weakened, not just
+      harsher entries).
 - [ ] **Validity gate leaves the worst case unprotected.** The row is assembled only while
       descending with positive trim (NACA TN 1516's valid domain), so a nose-down / high-sink
       botched approach — plausibly the highest-load case — gets *no* protection. The hard on/off

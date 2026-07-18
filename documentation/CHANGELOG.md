@@ -39,6 +39,48 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-01 — Brian — Emergent stall-recovery test suite (Python driver + ctest layer)
+**Branch/commit:** stall-recovery-cbf
+**What changed:** End-to-end suite testing the core claim of the recovery-CBF design: on slow
+approaches that stall near the water, the CBF-QP recovers and lands safely even though the nominal
+(constant-γ + constant-T_set, no flare/recovery logic) never commands it. Three layers:
+- **`LonRunStats`** (`lon_sim.hpp/.cpp`, additive): psi minima per barrier over their ACTIVE
+  windows, `min_b_impact_active`, `min_res_impact_active` (enforced impact row with the APPLIED
+  control), envelope extrema (max α, min V, T range), `out_of_model` (|α| > 85° = stall-table
+  validity ceiling), `ic_trim_converged`; exposed via `LonSim::stats()` so tests assert without
+  CSV parsing. NOTE: drift-only psi2 goes legitimately negative when the QP spends authority —
+  the state-only invariance witness is psi1; enforcement is checked via the row residual.
+- **Locked scenarios** `data/lon_stall_pull_cbf.yaml` (nominal pulls into stall at 18 m, CBF-on
+  counterpart of the departure demo; T_set 1.2 — at 2.5 the α-capped mush CLIMBS) and
+  `data/lon_stall_entry_cbf.yaml` (+11° kick at 12 m → α₀≈19.8°, in-grid) +
+  **`test/test_stall_recovery.cpp`** (3 ctest cases: pull recovers @ sink 0.23 / θ +7.7°; entry
+  recovers @ sink 0.21 / θ +3.0°; CBF-off demo departs — guards the "emergent" premise).
+- **`scripts/stall_recovery_suite.py`** (reuses harness.py): 7 fixed cases × CBF-on(scored)/
+  CBF-off(informational A/B) — slow_bleed, pull_into_stall, stalled_entry, tailwind_shear (+4.5
+  m/s gust hitting 13 m, 2-pass t_start calibration), downdraft_flare, 2 noisy-sensor variants ×
+  3 seeds — plus a recovery-floor sweep (h0 {5..20} × kick {8,12,16}°). PASS/FAIL verdicts, exit
+  1 on failure; `--only/--skip-sweep/--replot/--strict/--set` (regression injection). Artifacts →
+  `runs/stall_suite/` (summary.md/.csv, per-case A/B PNGs, sweep heatmap).
+**Why:** Nothing exercised the filter's recovery behavior end-to-end (TODO: impact barrier
+"unverified off-nominal"); the suite makes the emergent-safety claim testable and rerunnable.
+**Results (current tuning):** 11/11 scored runs PASS; 53/53 ctest. Recovery floor: clean recovery
+from stalled entry down to **12 m** for all kicks; at 8 m and 5 m the outcome stays soft
+(sink ≤ 0.25 m/s) but the QP passes through best-effort feasibility recovery (enforced-row
+guarantee breaks transiently) → classified "recovered-degraded". Known gaps encoded in
+thresholds: (1) unmeasured downdraft breaks the still-air V_td cap by ~1.3–1.6 m/s (energy row's
+ḣ model is air-relative) — downdraft_flare carries V_td_tol=2.0 as the frozen baseline;
+wind-aware margins are future work. (2) With sensor noise the enforced-row residual on the TRUE
+state can dip at the touchdown step (filter still measures +6 cm) — residual check applies to
+noise-free runs only. (3) stalled_entry survives `cbf.stall=false` (nominal θ-loop damps the
+kick; ensemble lands it) — the stall row's regression detector is pull_into_stall, which departs
+to α=133° → INVALID without it.
+**Follow-ups / notes for collaborator:** impact row still never binds (see TODO note); sweep
+kicks 12/16° extrapolate the VSPAERO deck above +20° α at entry (Viterna blend dominates);
+`--strict` flags CBF-off runs that stop failing (scenario drift).
+**Files touched:** `include/autoland/lon_sim.hpp`, `src/lon_sim.cpp`, `test/test_stall_recovery.cpp`
+(new), `CMakeLists.txt`, `data/lon_stall_pull_cbf.yaml` (new), `data/lon_stall_entry_cbf.yaml`
+(new), `scripts/stall_recovery_suite.py` (new), `TODO.md`.
+
 ## 2026-07-01 — Brian — MIL-F-8785C discrete wind gust model ("1-cosine")
 **Branch/commit:** stall-recovery-cbf
 **What changed:** Added the MIL-F-8785C discrete gust — the Simulink Aerospace Blockset

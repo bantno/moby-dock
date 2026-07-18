@@ -196,6 +196,11 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.V_td_max = getOr(yc, "V_td_max", 14.0);
   cb.g_eff = getOr(yc, "g_eff", 16.0);
   cb.Tmax = getOr(yc, "Tmax", ac_.thrust.T_static);
+  // Opt-in energy floor (powered stall recovery; default OFF -> set unchanged).
+  cb.energy_floor = getOrB(yc, "energy_floor", false);
+  cb.energy_floor_hard = getOrB(yc, "energy_floor_hard", false);
+  cb.V_floor = getOr(yc, "V_floor", cb.V_floor);
+  cb.g_floor = getOr(yc, "g_floor", cb.g_floor);
   // Impact-load barrier (NACA TN 1516). beta given in degrees in YAML.
   cb.n_limit = getOr(yc, "n_limit", 3.0);
   cb.beta = getOr(yc, "beta_deg", 22.5) * kDeg;
@@ -208,12 +213,17 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.c_stall = getArr2(yc, "c_stall", {4.0, 4.0});
   cb.c_noseup = getArr2(yc, "c_noseup", {2.0, 2.0});
   cb.c_energy = getArr3(yc, "c_energy", {2.0, 2.0, 2.0});
+  cb.c_energy_floor = getArr3(yc, "c_energy_floor", cb.c_energy_floor);
   cb.c_thrust_min = getArr2(yc, "c_thrust_min", {4.0, 4.0});
   cb.c_thrust_max = getArr2(yc, "c_thrust_max", {4.0, 4.0});
   cb.c_impact = getArr2(yc, "c_impact", {2.0, 2.0});
-  // Per-constraint quadratic slack weights (soft rows only); identity control cost.
+  // Control tracking weights (identity default; range-scale to let thrust act).
+  cb.w_de = getOr(yc, "w_de", cb.w_de);
+  cb.w_Tddot = getOr(yc, "w_Tddot", cb.w_Tddot);
+  // Per-constraint quadratic slack weights (soft rows only).
   cb.w_slack_stall = getOr(yc, "w_slack_stall", 1.0e5);
   cb.w_slack_energy = getOr(yc, "w_slack_energy", 1.0e4);
+  cb.w_slack_energy_floor = getOr(yc, "w_slack_energy_floor", cb.w_slack_energy_floor);
   cb.w_slack_noseup = getOr(yc, "w_slack_noseup", 1.0e3);
   cb.w_slack_impact = getOr(yc, "w_slack_impact", 1.0e4);
   cb.h_meas_seed = static_cast<unsigned int>(
@@ -262,6 +272,7 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   const double h0 = getOr(yi, "h0", 40.0);
   const double V0 = V_app + getOr(yi, "dV", 0.0);
   const LonTrimResult lt = lonTrim(table_, *mixing_, ac_, V0, 0.0);
+  stats_.ic_trim_converged = lt.converged;
   if (!lt.converged)
     std::cerr << "[lon_sim] warning: level-flight trim did not converge (res="
               << lt.residual << ")\n";
@@ -272,6 +283,12 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
 LonTouchdown LonSim::run(const std::string& csv_path) {
   const double dt = sc_.dt;
   const int nsteps = static_cast<int>(sc_.t_max / dt);
+
+  // Fresh stats per run; the IC-trim flag was set by the constructor and holds
+  // for every run of this sim instance.
+  const bool ic_trim_ok = stats_.ic_trim_converged;
+  stats_ = LonRunStats{};
+  stats_.ic_trim_converged = ic_trim_ok;
 
   LonNominal nominal(sc_.nominal);
   LonCBFFilter filter(sc_.cbf);
@@ -301,7 +318,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
          "b_energy,psi1_energy,psi2_energy,psi3_energy,res_energy,"
          "res_tmin,res_tmax,"
          "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp,h_meas,h_filt,"
-         "n_rows_dropped,hard_dropped,CL,CD,dCL_stall,W_u,W_h,x_gust\n";
+         "n_rows_dropped,hard_dropped,CL,CD,dCL_stall,W_u,W_h,x_gust,"
+         "b_efloor,psi1_efloor,psi2_efloor,psi3_efloor,res_efloor\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -312,11 +330,12 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   double min_psi1_st = 1e30, min_psi2_st = 1e30;              // stall (whole flight)
   double min_psi1_nu = 1e30, min_psi2_nu = 1e30;              // nose-up (h<h_noseup)
   double min_psi1_en = 1e30, min_psi2_en = 1e30, min_psi3_en = 1e30;  // energy (deg 3)
+  double min_psi1_ef = 1e30, min_psi2_ef = 1e30, min_psi3_ef = 1e30;  // energy floor (opt-in)
   double min_psi1i = 1e30, min_psi2i = 1e30;  // impact (over the active z<z_gate window)
   // Diagnostic-integrity + filter-health accounting: non-finite psi samples must
   // not be silently swallowed by std::min (NaN < x is false), and dropped HARD
   // barrier rows must be visible rather than masquerading as recoveries=0.
-  int nan_stall = 0, nan_noseup = 0, nan_energy = 0, nan_imp = 0;
+  int nan_stall = 0, nan_noseup = 0, nan_energy = 0, nan_efloor = 0, nan_imp = 0;
   int steps_rows_dropped = 0, steps_hard_dropped = 0;
   auto gmin = [](double& mn, double v) { if (std::isfinite(v)) mn = std::min(mn, v); };
 
@@ -343,6 +362,13 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const double sink = -(X[LV] * std::sin(X[LGAM]) + Wg.w);
     const auto xa = toArray(X);
 
+    // Flight-envelope extrema + plant-validity flag for the run stats.
+    stats_.max_alpha = std::max(stats_.max_alpha, alpha);
+    stats_.min_V = std::min(stats_.min_V, X[LV]);
+    stats_.min_T = std::min(stats_.min_T, X[LT]);
+    stats_.max_T = std::max(stats_.max_T, X[LT]);
+    if (std::abs(alpha) > kAlphaModelLimit) stats_.out_of_model = true;
+
     // HOCBF nested functions psi_1, psi_2 (linear class-K): the true safe-set
     // membership condition. psi_1 = L_f b + c1 b; psi_2 = L_f^2 b + (c1+c2)L_f b
     // + c1 c2 b.
@@ -367,12 +393,16 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const StallBarrier bstall = makeStallBarrier(sc_.cbf.alpha_stall, sc_.cbf.stall_margin);
     const NoseUpBarrier bnose = makeNoseUpBarrier(sc_.cbf.theta_min);
     const EnergyBarrier ben = makeEnergyBarrier(aero, sc_.cbf.V_td_max, sc_.cbf.g_eff);
+    const EnergyFloorBarrier befl =
+        makeEnergyFloorBarrier(aero, sc_.cbf.V_floor, sc_.cbf.g_floor);
     const auto lst = barrierLie<2>(aero, bstall, X);
     const auto lnu = barrierLie<2>(aero, bnose, X);
     const auto len = barrierLie<3>(aero, ben, X);
+    const auto lef = barrierLie<3>(aero, befl, X);
     const auto& cs = sc_.cbf.c_stall;
     const auto& cn = sc_.cbf.c_noseup;
     const auto& ce = sc_.cbf.c_energy;
+    const auto& cf = sc_.cbf.c_energy_floor;
     const double psi1_st = lst.Lf[1] + cs[0] * lst.Lf[0];
     const double psi2_st = lst.Lf[2] + (cs[0] + cs[1]) * lst.Lf[1] + cs[0] * cs[1] * lst.Lf[0];
     const double psi1_nu = lnu.Lf[1] + cn[0] * lnu.Lf[0];
@@ -382,10 +412,21 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const double psi3_en = len.Lf[3] + (ce[0] + ce[1] + ce[2]) * len.Lf[2]
                          + (ce[0] * ce[1] + ce[0] * ce[2] + ce[1] * ce[2]) * len.Lf[1]
                          + ce[0] * ce[1] * ce[2] * len.Lf[0];
+    const double psi1_ef = lef.Lf[1] + cf[0] * lef.Lf[0];
+    const double psi2_ef = lef.Lf[2] + (cf[0] + cf[1]) * lef.Lf[1] + cf[0] * cf[1] * lef.Lf[0];
+    const double psi3_ef = lef.Lf[3] + (cf[0] + cf[1] + cf[2]) * lef.Lf[2]
+                         + (cf[0] * cf[1] + cf[0] * cf[2] + cf[1] * cf[2]) * lef.Lf[1]
+                         + cf[0] * cf[1] * cf[2] * lef.Lf[0];
     gmin(min_psi1_st, psi1_st); gmin(min_psi2_st, psi2_st);
     gmin(min_psi1_en, psi1_en); gmin(min_psi2_en, psi2_en); gmin(min_psi3_en, psi3_en);
     if (!std::isfinite(psi1_st) || !std::isfinite(psi2_st)) ++nan_stall;
     if (!std::isfinite(psi1_en) || !std::isfinite(psi2_en) || !std::isfinite(psi3_en)) ++nan_energy;
+    // Energy-floor psi minima only when its row is actually assembled (opt-in).
+    if (sc_.cbf.energy_floor) {
+      gmin(min_psi1_ef, psi1_ef); gmin(min_psi2_ef, psi2_ef); gmin(min_psi3_ef, psi3_ef);
+      if (!std::isfinite(psi1_ef) || !std::isfinite(psi2_ef) || !std::isfinite(psi3_ef))
+        ++nan_efloor;
+    }
     // Nose-up psi minima only over its active window (h < h_noseup), where the row
     // is actually assembled.
     if (X[LH] < sc_.cbf.h_noseup) {
@@ -406,8 +447,10 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     // model-valid window): below z_gate, descending, positive trim.
     const bool impact_active = X[LH] < sc_.cbf.z_gate && -X[LGAM] > 0.0 &&
                                (X[LTH] - sc_.cbf.tau_keel) > 0.0;
+    const double b_imp_val = bimp(xa);
     if (impact_active) {
       gmin(min_psi1i, psi1i); gmin(min_psi2i, psi2i);
+      gmin(stats_.min_b_impact_active, b_imp_val);
       if (!std::isfinite(psi1i) || !std::isfinite(psi2i)) ++nan_imp;
     }
     // n_peak and kappa for the trace, recomputed from the frozen barrier.
@@ -417,8 +460,9 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
                                    sc_.cbf.eps_g0 * sc_.cbf.eps_g0);
     const double kappa_l = std::sin(tau_l) * std::cos(tau_l + gamma0_l) / sg0_l;
     const double ydot0_l = -X[LV] * std::sin(X[LGAM]);
-    const double n_peak =
-        bimp.K0 * ydot0_l * ydot0_l * (bimp.Clf0 + bimp.dClf_dk * (kappa_l - bimp.kappa0));
+    const double n_peak = (bimp.K00 + bimp.dK0_dtau * (tau_l - bimp.tau0)) *
+                          ydot0_l * ydot0_l *
+                          (bimp.Clf0 + bimp.dClf_dk * (kappa_l - bimp.kappa0));
 
     // Active-set diagnostics: constraint residual rhs - a.U for each barrier row
     // (residual ~ 0 => that barrier is binding/active and shaping the control).
@@ -428,6 +472,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     const HocbfRow rst = hocbfRow(Lfst, lst.LgLf, {cs[0], cs[1]});
     const HocbfRow rnu = hocbfRow(Lfnu, lnu.LgLf, {cn[0], cn[1]});
     const HocbfRow ren = hocbfRow(Lfen, len.LgLf, {ce[0], ce[1], ce[2]});
+    std::vector<double> Lfef(lef.Lf.begin(), lef.Lf.end());
+    const HocbfRow ref = hocbfRow(Lfef, lef.LgLf, {cf[0], cf[1], cf[2]});
     const HocbfRow rtl = thrustMinRow(X, sc_.cbf.c_thrust_min[0], sc_.cbf.c_thrust_min[1]);
     const HocbfRow rtu = thrustMaxRow(X, sc_.cbf.Tmax, sc_.cbf.c_thrust_max[0], sc_.cbf.c_thrust_max[1]);
     std::vector<double> Lfi(lii.Lf.begin(), lii.Lf.end());
@@ -436,8 +482,12 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
       return r.rhs - (r.a(0, LDE) * U[LDE] + r.a(0, LTDDOT) * U[LTDDOT]);
     };
     const double res_st = resid(rst), res_nu = resid(rnu), res_en = resid(ren);
+    const double res_ef = resid(ref);
     const double res_tl = resid(rtl), res_tu = resid(rtu);
     const double res_i = resid(ri);
+    // Enforced impact-row residual with the APPLIED control (>= 0 up to QP
+    // tolerance when the hard row held), tracked over the active window.
+    if (impact_active) gmin(stats_.min_res_impact_active, res_i);
 
     csv << t << ',' << X[LH] << ',' << X[LV] << ',' << X[LGAM] / kDeg << ','
         << X[LTH] / kDeg << ',' << X[LQ] << ',' << X[LT] << ',' << X[LTDOT] << ','
@@ -448,10 +498,12 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         << bnose(xa) << ',' << psi1_nu << ',' << psi2_nu << ',' << res_nu << ','
         << ben(xa) << ',' << psi1_en << ',' << psi2_en << ',' << psi3_en << ',' << res_en << ','
         << res_tl << ',' << res_tu << ','
-        << bimp(xa) << ',' << n_peak << ',' << kappa_l << ',' << psi1i << ',' << psi2i
+        << b_imp_val << ',' << n_peak << ',' << kappa_l << ',' << psi1i << ',' << psi2i
         << ',' << res_i << ',' << h_meas << ',' << h_filt << ',' << n_rows_dropped << ','
         << (hard_dropped ? 1 : 0) << ',' << CL_d << ',' << CD_d << ',' << dCL_stall << ','
-        << Wg.u << ',' << Wg.w << ',' << x_gust << '\n';
+        << Wg.u << ',' << Wg.w << ',' << x_gust << ','
+        << befl(xa) << ',' << psi1_ef << ',' << psi2_ef << ',' << psi3_ef << ','
+        << res_ef << '\n';
 
     if (X[LH] <= 0.0 && k > 0) {
       td.reached = true;
@@ -468,7 +520,27 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
       X = rk4(table_, *mixing_, ac_, X, U, dt);
     }
     t += dt;
+    ++stats_.steps;
   }
+  td.recoveries = recoveries;
+  td.steps_hard_dropped = steps_hard_dropped;
+
+  // Copy the loop tallies into the run record (the locals stay the print
+  // sources below, so console output is unchanged).
+  stats_.recoveries = recoveries;
+  stats_.steps_rows_dropped = steps_rows_dropped;
+  stats_.steps_hard_dropped = steps_hard_dropped;
+  stats_.min_psi1_stall = min_psi1_st;   stats_.min_psi2_stall = min_psi2_st;
+  stats_.min_psi1_noseup = min_psi1_nu;  stats_.min_psi2_noseup = min_psi2_nu;
+  stats_.min_psi1_energy = min_psi1_en;  stats_.min_psi2_energy = min_psi2_en;
+  stats_.min_psi3_energy = min_psi3_en;
+  stats_.min_psi1_efloor = min_psi1_ef;  stats_.min_psi2_efloor = min_psi2_ef;
+  stats_.min_psi3_efloor = min_psi3_ef;
+  stats_.min_psi1_impact = min_psi1i;    stats_.min_psi2_impact = min_psi2i;
+  stats_.nan_stall = nan_stall;   stats_.nan_noseup = nan_noseup;
+  stats_.nan_energy = nan_energy; stats_.nan_efloor = nan_efloor;
+  stats_.nan_impact = nan_imp;
+  stats_.t_end = t;
 
   std::cout << "=== Augmented longitudinal landing ===\n";
   std::cout << "trim theta_cmd seed, T_set=" << sc_.nominal.T_set << " N, gamma_ref="
@@ -506,6 +578,11 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
             << "  (h < h_noseup=" << sc_.cbf.h_noseup << " m)" << nanTag(nan_noseup) << "\n";
   std::cout << "    energy : min psi1=" << min_psi1_en << "  min psi2=" << min_psi2_en
             << "  min psi3=" << min_psi3_en << nanTag(nan_energy) << "\n";
+  if (sc_.cbf.energy_floor) {
+    std::cout << "    e-floor: min psi1=" << min_psi1_ef << "  min psi2=" << min_psi2_ef
+              << "  min psi3=" << min_psi3_ef << "  (V_floor=" << sc_.cbf.V_floor
+              << " m/s, g_floor=" << sc_.cbf.g_floor << ")" << nanTag(nan_efloor) << "\n";
+  }
   std::cout << "    impact : min psi1=" << min_psi1i << "  min psi2=" << min_psi2i
             << "  (z < z_gate=" << sc_.cbf.z_gate << " m)" << nanTag(nan_imp) << "\n";
   std::cout << "  trace -> " << csv_path << "\n";

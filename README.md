@@ -5,51 +5,75 @@ flying-boat seaplane UAV autoland. This is a design sandbox, **not** onboard cod
 It is structured so a Control Barrier Function (CBF) QP safety filter drops in
 later without restructuring.
 
-## Build (no system installs)
+## Build & test (no system installs)
 
-Every dependency — Eigen, yaml-cpp, Catch2 — is fetched by CMake `FetchContent`,
-so a network connection is needed on first configure but nothing must be
-installed system-wide.
+Every dependency — Eigen, yaml-cpp, Catch2, OSQP — is fetched by CMake `FetchContent`,
+so a network connection is needed on first configure but nothing must be installed
+system-wide.
 
 ```bash
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-./build/autoland_sim                 # uses bundled data/, writes autoland_log.csv
-python3 scripts/plot_results.py autoland_log.csv
 ```
 
-`autoland_sim [stab] [aircraft.yaml] [scenario.yaml] [out.csv]` — all optional.
+## Run the water-landing CBF sim + plot the results
 
-## Run-and-plot harness (longitudinal CBF sim)
+The primary target is the **augmented-longitudinal CBF-QP water-landing sim**
+(`lon_autoland_sim`). Its safety filter enforces the *recovery* barrier set:
+hydrodynamic **impact-load** (the only hard safety row) plus soft **stall/AoA**,
+**nose-up attitude**, and a **total-energy** ceiling, with the thrust actuator/validity
+guards. Barriers and gains live under the `cbf:` block of `data/lon_scenario.yaml`; the
+AoA guard reproduces the pilot low-altitude stall recovery (pitch down + full elevator).
 
-`scripts/harness.py` is the one-command way to drive the longitudinal water-
-landing sim (`lon_autoland_sim`): it rebuilds the binary if the sources are
-stale, applies inline scenario overrides, runs the sim, and plots the trace —
-with **every plot annotation (`v_safe`, `Vmin`, `V_max`, `Tmax`, …) read from
-the resolved scenario**, so the figure can never drift out of sync with the run.
+### Option A — run-and-plot harness (recommended)
+
+`scripts/harness.py` rebuilds the binary if the sources are stale, applies inline
+scenario overrides, runs the sim, prints the touchdown summary + a barrier-minimum
+table, and plots the trace — with **every plot annotation (`V_td_max`, `alpha_stall`,
+`theta_min`, `Tmax`, …) read from the resolved scenario**, so the figure can never drift
+out of sync with the run.
 
 ```bash
 # single run (defaults: data/lon_scenario.yaml on data/AHAB_combined.stab)
 python3 scripts/harness.py run
+
 # override any scenario field (dotted key; value parsed as YAML)
-python3 scripts/harness.py run --name dive --set gamma_app_deg=-60 --set cbf.v_safe=0.1
+python3 scripts/harness.py run --name slow_td --set cbf.V_td_max=11 --set stall.enabled=true
 python3 scripts/harness.py run --set cbf.enabled=false -o figures/nominal_only.png
 
-# overlay N labeled cases (subsumes plot_lon_compare / plot_gain_compare)
+# overlay N labeled cases
 python3 scripts/harness.py compare \
     --case "CBF on:cbf.enabled=true" \
     --case "CBF off:cbf.enabled=false"
-python3 scripts/harness.py compare --name gains \
-    --case "cd2:cbf.c_descent=[2,2,2]" \
-    --case "cd10:cbf.c_descent=[10,10,10]"
+python3 scripts/harness.py compare --name egains \
+    --case "e2:cbf.c_energy=[2,2,2]" \
+    --case "e5:cbf.c_energy=[5,5,5]"
 ```
 
-Each run writes `runs/<name>.{csv,resolved.yaml,log,png}` (the dir is git-ignored)
-and prints the touchdown summary plus a barrier-minimum pass/fail table
-(`b >= 0` = safe). The harness also surfaces non-physical artifacts it finds — NaN
-barrier values, and the run-to-run solver jitter the QP shows when it sits in
-feasibility-recovery (visible as differing `runs/*.csv` for the same scenario).
+Each run writes `runs/<name>.{csv,resolved.yaml,log,png}` (git-ignored). The barrier
+table marks the **hard** rows (impact + thrust) `OK`/`VIOLATION` and reports the **soft**
+rows' minima (stall / nose-up / energy — they may dip transiently). The harness also
+surfaces NaN barrier values and the run-to-run jitter the QP shows in feasibility-recovery.
+
+### Option B — run the binary directly, then plot
+
+```bash
+./build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml data/lon_scenario.yaml lon_log.csv
+
+# standard 6-panel trace:   args = [csv] [out.png] [V_td_max] [g_eff] [Tmax]
+python3 scripts/plot_lon_results.py lon_log.csv figures/lon_landing.png 14 16 50
+# last N s before touchdown: args = ... [V_td_max] [g_eff] [Tmax] [window_s]
+python3 scripts/plot_lon_zoom.py    lon_log.csv figures/lon_zoom.png    14 16 50 5
+# impact-load barrier detail
+python3 scripts/plot_lon_impact.py  lon_log.csv figures/lon_impact.png
+```
+
+`lon_autoland_sim [stab] [aircraft.yaml] [lon_scenario.yaml] [out.csv]` — all optional
+(defaults to the bundled `data/` files).
+
+> A separate legacy body-axis sim (`autoland_sim`, `src/sim.cpp`) exists as an older
+> design sandbox and is **not** part of the CBF workflow.
 
 ## Architecture
 
@@ -98,9 +122,13 @@ Open tasks, data to calibrate, and ideas live in **[`TODO.md`](TODO.md)** (root)
 heavyweight design rationale is in `documentation/water_landing_cbf_design.md`; recent
 changes are in `documentation/CHANGELOG.md`.
 
-## Next step: CBF QP
+## CBF safety filter
 
-`include/autoland/cbf.hpp` defines the final filter signature and the QP it will
-solve; `src/cbf.cpp` marks the OSQP `TODO`. Candidate barriers are listed there
-and stubbed in `Sim::buildCandidateBarriers`: minimum airspeed above stall, bank
-limit tightening near the surface, and sink rate bounded as a function of height.
+The **longitudinal CBF-QP is implemented** (OSQP-backed):
+`include/autoland/{hocbf,lon_cbf_filter,impact_barrier}.hpp`, `src/lon_cbf_filter.cpp`,
+with exact Lie derivatives from `include/autoland/lie_taylor.hpp`. Design rationale is in
+`documentation/water_landing_cbf_design.md` and the derivations (barrier definitions,
+relative degrees, QP) in `documentation/water_landing_cbf_math.md`.
+
+The older body-axis filter (`include/autoland/cbf.hpp`, `src/cbf.cpp`) remains a
+pass-through stub for the legacy `autoland_sim` path only.

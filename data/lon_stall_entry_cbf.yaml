@@ -1,0 +1,46 @@
+# =============================================================================
+# LOCKED suite scenario: stalled entry near the water, CBF filter ON.
+#
+# Slow approach (V_app ~ 1.08 * V_stall) trimmed level at 12 m, then a +11 deg
+# pitch kick puts the initial AoA (~19.8 deg) well past the 11-deg wing stall
+# before the first control sample. The nominal (constant gamma_ref = -3 deg +
+# constant T_set) has no stall-recovery logic; arresting the departure --
+# elevator nose-down from the stall row, thrust from the actuator-validity
+# guards, then a nose-up touchdown under the impact barrier -- must emerge from
+# the CBF-QP with only ~12 m of air below.
+#
+# LOCKED: test/test_stall_recovery.cpp asserts against this file, and
+# scripts/stall_recovery_suite.py uses it as the stalled_entry base and the
+# recovery-floor sweep template. Edit the numbers only together with the
+# thresholds in both layers.
+# =============================================================================
+
+V_app: 10.5            # ~1.08 * V_stall (V_stall ~ 9.7 m/s at CLmax 1.44)
+gamma_app_deg: -3.0
+dt:    0.01
+t_max: 40.0
+cbf_enabled: true
+
+stall:
+  enabled: true        # viscous-stall overlay ON (inviscid deck cannot stall)
+  severity: 1.0
+
+initial:
+  h0:          12.0    # stalled with only ~12 m of air below
+  dV:           0.0
+  dtheta_deg:  11.0    # alpha0 = trim alpha + 11 deg ~ 19.8 deg: deep past the
+                       # 11-deg stall at t=0, yet inside the +/-20 deg VSPAERO
+                       # grid (larger kicks extrapolate the inviscid deck)
+
+nominal:
+  T_set: 2.0           # powered-approach baseline (energy-limited vehicle)
+  Kp_T:  4.0
+  Kd_T:  4.0
+  Kp_gamma: 2.0
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 25.0
+  Kp_theta: 1.0        # real-Iyy gains
+  Kq:       0.25
+
+# cbf: block intentionally omitted -> code defaults: all barriers on, impact
+# HARD, alpha_lim = 9 deg, Tmax = T_static, no sensor noise (deterministic).
