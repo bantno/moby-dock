@@ -1,14 +1,14 @@
 # =============================================================================
-# Augmented-longitudinal CBF-QP water-landing scenario.
+# LOCKED test scenario: the flagship -3 deg approach (lon_scenario.yaml,
+# identical tune) landed onto a REGULAR deep-water wave -- the deterministic
+# N = 1 degenerate case of the Airy/JONSWAP field (water_waves.hpp).
+# H = 0.20 m crest-to-trough, T = 2.0 s (lambda = gT^2/2pi ~ 6.2 m), head seas.
 #
-# State X = [h, V, gamma, theta, q, T, Tdot]; control U = [delta_e, Tddot].
-# Nominal = constant thrust setpoint (PD on the T state) + cascade elevator law
-# holding a constant negative flight-path angle gamma. The CBF-QP filter then
-# enforces the recovery set: impact-load (HARD), stall/AoA, nose-up attitude,
-# total-energy ceiling, and the thrust actuator/validity guards. No airspeed floor.
-#
-# Defaults for theta_trim / T_set / gamma_ref come from a trim solve at
-# (V_app, gamma_app_deg); fields below override them.
+# Exercised by test_water_waves.cpp: touchdown must happen AT the instantaneous
+# surface (h_td = eta), with the wave-blind filter flying the surface-relative
+# altimeter, and the touchdown record must carry the wave-referenced TN 1516
+# slam-load truth. Do not retune casually -- the ctest thresholds are calibrated
+# to this file.
 # =============================================================================
 
 V_app: 18.0           # approach airspeed [m/s]
@@ -49,17 +49,12 @@ wind:
 # USACE CEM growth laws. regular: true collapses to one deterministic
 # component (Hs = crest-to-trough height).
 waves:
-  enabled: false
-  regular: false
-  Hs: 0.22            # significant wave height [m]
-  Tp: 1.8             # peak (modal) period [s]
-  gamma: 3.3          # JONSWAP peak enhancement; 1 = Bretschneider (STANAG 4194)
-  n: 128              # spectral components
-  seed: 1             # locked sea (phases/frequencies) for reproducibility
-  direction: head     # head | following (relative to the flight direction +x)
-  phase_deg: 0.0      # regular wave: phase at (x, t) = (0, 0)
-  contact_len: 0.4    # hull wetted length [m]: touchdown slope = mean tilt
-                      # across it (a keel bridges sub-hull-length ripples)
+  enabled: true
+  regular: true       # single deterministic component: eta = (Hs/2) cos(kx + wt)
+  Hs: 0.20            # crest-to-trough height H [m] (amplitude 0.10)
+  Tp: 2.0             # period [s] -> lambda = gT^2/2pi ~ 6.2 m, c_p ~ 3.1 m/s
+  direction: head     # travelling -x, toward the aircraft
+  phase_deg: 0.0
 
 # --- Nominal controller -------------------------------------------------------
 nominal:

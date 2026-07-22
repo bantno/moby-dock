@@ -39,6 +39,51 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-18 — Brian — Surface-wave model (STANAG 4194 / JONSWAP), plant-side truth
+**Branch/commit:** stall-recovery-suite
+**What changed:** Linear Airy surface-wave field (`include/autoland/water_waves.hpp`, header-only,
+mirrors `wind_gust.hpp`): one JONSWAP spectrum implementation `S(w) = A_γ S_B(w) γ^b` whose
+`γ = 1` limit IS the two-parameter Bretschneider spectrum NATO STANAG 4194 prescribes with its
+Annex D open-ocean sea states, and whose `γ ≈ 3.3` is the fetch-limited (developing/LAKE) sea —
+one code path, the sea is a scenario parameter. Realization per the textbook chain (St. Denis &
+Pierson 1953; Fossen ch. 8; ITTC 7.5-02-07-01.1): N seeded components, `A_i = sqrt(2 S(w_i) dw)`,
+random phase + within-bin frequency jitter (non-periodic), deep-water dispersion `k = w²/g`;
+`regular: true` degenerates to one deterministic component. `eta/slope/etaDot` are exact closed
+forms; `slopeMean(x,t,L)` is the tilt across the hull contact length (`contact_len`, default
+0.4 m) — the point slope's spectrum `k²S` is ripple-dominated and would overstate the contact
+geometry a keel actually bridges.
+**Wiring (wave-BLIND filter, per design decision):** plant truth only — touchdown test is now
+`h <= eta(x,t)`; the altimeter measures RADAR clearance `h - eta` (so the filter flies the
+surface-relative altitude but its barrier model stays flat-water); new earth-frame ground track
+`x` (trapezoid outside RK4 — waves never force the airborne dynamics). `LonTouchdown` gains the
+contact record: `eta/slope/sink_rel` (closure `-d/dt(h-eta)`) and the exact TN 1516 load truth
+`n_peak_flat` vs `n_peak_wave` (tau/gamma0 tilted by the hull-mean surface angle, closure onto
+the moving face; via the new unfrozen `impactNPeakExact`, factored out of the barrier factory).
+CSV gains `x,eta,eta_slope`. Scenarios: `data/lon_landing_waves_lake.yaml` (JONSWAP γ3.3,
+Hs 0.22 / Tp 1.8 from the USACE CEM fetch laws at U10=8 m/s, F=3 km; head seas; STANAG SS3
+ocean alternative in comments), `data/lon_landing_wave_regular.yaml` (locked ctest twin).
+`scripts/plot_wave_landing.py` → `figures/lon_landing_waves.png`.
+**Why:** TODO's top physical-realism gap ("smooth-water assumption"). Source preference was
+mil-spec > textbook > paper: STANAG 4194 + USACE CEM parameterize the sea, the textbook layer
+realizes it, Hasselmann/Pierson-Moskowitz/Bretschneider are the roots.
+**Results:** 57/57 ctest (4 new `[waves]` cases: spectrum closed form + `m0 = Hs²/16` identity,
+realization variance/dispersion/determinism, regular-wave analytics incl. the advection identity,
+and the end-to-end surface touchdown). Lake demo: the wave-blind filter still meets its
+flat-water spec at contact (sink 0.209 m/s, V 13.37 — near-identical to the flat baseline) but
+the TRUTH is contact on a 7.7° rising face at 2.36 m/s surface closure: wave-referenced
+`n_peak` = 18.8 g vs 0.32 g flat-referenced (~59×, ~6× over `n_limit=3`). The smooth-water gap
+is now a measured number, and it motivates the stage-2 wave-aware barrier (TODO updated).
+**Caveats:** one seeded sea = one draw (sweep seeds/encounter phase before quoting statistics);
+`n_peak_wave` uses the clamped TN 1516 model well outside its validated attitude range when the
+face is steep (τ_w clamps at 1°) — read it as "far outside the flat-water design point", not as
+a calibrated load; deep-water dispersion assumed (fine for lake chop; shallow-water k would need
+the full dispersion relation).
+**Files touched:** `include/autoland/water_waves.hpp` (new), `include/autoland/impact_barrier.hpp`
+(`impactK0`/`impactNPeakExact` factored out), `include/autoland/lon_sim.hpp`, `src/lon_sim.cpp`,
+`test/test_water_waves.cpp` (new), `CMakeLists.txt`, `data/lon_scenario.yaml` (waves block, off),
+`data/lon_landing_waves_lake.yaml` (new), `data/lon_landing_wave_regular.yaml` (new),
+`scripts/plot_wave_landing.py` (new), `README.md`, `TODO.md`.
+
 ## 2026-07-01 — Brian — Emergent stall-recovery test suite (Python driver + ctest layer)
 **Branch/commit:** stall-recovery-cbf
 **What changed:** End-to-end suite testing the core claim of the recovery-CBF design: on slow

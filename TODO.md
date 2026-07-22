@@ -120,10 +120,15 @@ barrier exists for.
       so it amplifies state noise, and the flare assumes an instantaneous elevator). Add sensor
       noise + a servo-lag model and re-check. (Altitude specifically: see the Φ(z) estimation
       item under CBF/theory.)
-- [ ] **Smooth-water assumption (no wave model).** `τ`/`γ₀` are referenced to flat water; in a
-      seaway the trim/path *relative to the local wave slope* dominate the slam load (a contact
-      on a wave face spikes κ). Reference the contact state to the wave surface. Probably the
-      biggest single physical unrealism for real ops.
+- [ ] **Smooth-water assumption (waves now modeled plant-side; barrier still flat).** A linear
+      Airy/JONSWAP wave field exists as PLANT truth (`water_waves.hpp`, 2026-07): touchdown at
+      `h = η`, radar-altimeter clearance, and the wave-referenced TN 1516 load in the touchdown
+      record. The lake demo (`lon_landing_waves_lake.yaml`) quantifies the gap: the wave-blind
+      filter meets its flat-water spec (sink 0.21 m/s) while contacting a 7.7° face at 2.4 m/s
+      surface-relative closure — wave-referenced `n_peak` ~59× the flat-referenced value, ~6× over
+      `n_limit`. Remaining (the actual fix): reference the FILTER's `τ`/`γ₀`/`Φ(z)` to the local
+      wave surface (wave-aware barrier, needs surface slope estimation), and sweep seeds/encounter
+      phase — one locked sea is a single draw, not a statistic.
 - [ ] **Lift = weight during contact (inherited TN 1516 assumption).** At the decelerating,
       low-speed touchdown the wing may carry < weight, dumping more onto the hull → true load
       *higher* than predicted (non-conservative). Check/bound this.

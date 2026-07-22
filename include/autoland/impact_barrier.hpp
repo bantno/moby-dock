@@ -60,6 +60,48 @@ inline ClfLocal clfLookup(double kappa) {
   return {V[lo] + slope * (kappa - K[lo]), slope};
 }
 
+// Hull-coefficient model K0(tau) = (alpha_hull(tau)/(W g^2))^(1/3) (eqs 12a/
+// 45/49), evaluated at tau clamped away from 0 and the phi_A = 0 singularity
+// (tan tau = 2 tan beta) so K0 stays finite and positive in pathological
+// states; landing trims (a few deg) sit well inside the clamp. Shared by the
+// frozen-model factory below and the exact evaluator impactNPeakExact.
+struct ImpactK0Local {
+  double K0{0};
+  double tau0{0};   // the clamped tau actually used
+  double phi_A{0};  // end-flow factor at tau0 (the affine slope needs it)
+};
+
+inline ImpactK0Local impactK0(double mass, double g, double beta,
+                              double rho_water, double tau_raw) {
+  const double deg = M_PI / 180.0;
+  const double tau_min = 1.0 * deg;
+  const double tau_max = std::atan(2.0 * std::tan(beta)) - 1.0 * deg;
+  const double tau0 = std::min(tau_max, std::max(tau_min, tau_raw));
+  const double f_beta = M_PI / (2.0 * beta) - 1.0;                     // eq 45
+  const double phi_A = 1.0 - std::tan(tau0) / (2.0 * std::tan(beta));  // eq 49 (>0)
+  const double alpha_hull = f_beta * f_beta * phi_A * rho_water * M_PI /
+                            (6.0 * std::sin(tau0) * std::cos(tau0) * std::cos(tau0));
+  const double W = mass * g;
+  return {std::cbrt(alpha_hull / (W * g * g)), tau0, phi_A};
+}
+
+// Exact (no freeze) TN 1516 peak load n_peak = K0(tau) Clf(kappa) ydot0^2 at
+// an arbitrary contact geometry -- plain double math for plant-side truth
+// diagnostics (e.g. the wave-slope-referenced touchdown load, where tau and
+// gamma0 are tilted by the local surface angle and ydot0 is the closure rate
+// onto the moving surface). Mirrors the factory's clamps: kappa to the Clf
+// table range, tau via impactK0.
+inline double impactNPeakExact(double mass, double g, double beta,
+                               double rho_water, double eps_g0, double tau,
+                               double gamma0, double ydot0) {
+  const double sg0 =
+      std::sqrt(std::sin(gamma0) * std::sin(gamma0) + eps_g0 * eps_g0);
+  double kappa = std::sin(tau) * std::cos(tau + gamma0) / sg0;
+  kappa = std::min(10.0, std::max(0.2, kappa));
+  const double Clf = clfLookup(kappa).value;
+  return impactK0(mass, g, beta, rho_water, tau).K0 * Clf * ydot0 * ydot0;
+}
+
 struct ImpactLoadBarrier {
   double n_limit{0};
   double K00{0}, dK0_dtau{0};    // local-affine hull coef (alpha_hull/(W g^2))^(1/3)
@@ -120,20 +162,12 @@ inline ImpactLoadBarrier makeImpactLoadBarrier(const AeroLocal& a, double n_limi
   b.Clf0 = c.value;
   b.dClf_dk = c.slope;
 
-  // Hull coefficient alpha_hull (eq 12a) with dead-rise / end-flow factors
-  // (eqs 45/49). Clamp tau0 away from 0 and the phi_A = 0 singularity
-  // (tan tau = 2 tan beta) so K0 stays finite and positive in pathological
-  // states; landing trims (a few deg) sit well inside this clamp.
-  const double deg = M_PI / 180.0;
-  const double tau_min = 1.0 * deg;
-  const double tau_max = std::atan(2.0 * std::tan(beta)) - 1.0 * deg;
-  const double tau0 = std::min(tau_max, std::max(tau_min, tau0_raw));
-  const double f_beta = M_PI / (2.0 * beta) - 1.0;                  // eq 45
-  const double phi_A = 1.0 - std::tan(tau0) / (2.0 * std::tan(beta));  // eq 49 (>0)
-  const double alpha_hull = f_beta * f_beta * phi_A * rho_water * M_PI /
-                            (6.0 * std::sin(tau0) * std::cos(tau0) * std::cos(tau0));
-  const double W = a.mass * a.g;
-  b.K00 = std::cbrt(alpha_hull / (W * a.g * a.g));
+  // Hull coefficient K0 at the clamped anchor (impactK0: eqs 12a/45/49 with
+  // the tau clamps).
+  const ImpactK0Local kl = impactK0(a.mass, a.g, beta, rho_water, tau0_raw);
+  const double tau0 = kl.tau0;
+  const double phi_A = kl.phi_A;
+  b.K00 = kl.K0;
   // Local-affine slope, dK0/dtau = (K0/3) d(ln alpha_hull)/dtau, anchored at the
   // clamped tau0 (bounds |dK0_dtau| via the cot term; mirrors the kappa0 clamp).
   // d(ln alpha_hull)/dtau = -cot(tau) + 2 tan(tau) - sec^2(tau)/(2 tan(beta) phi_A)

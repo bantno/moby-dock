@@ -153,6 +153,7 @@ add_executable(unit_tests
   test/test_lie_derivatives.cpp
   test/test_stall_model.cpp
   test/test_wind_gust.cpp
+  test/test_water_waves.cpp
   test/test_stall_recovery.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)

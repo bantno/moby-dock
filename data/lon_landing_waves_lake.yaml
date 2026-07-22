@@ -1,14 +1,26 @@
 # =============================================================================
-# Augmented-longitudinal CBF-QP water-landing scenario.
+# Wave-landing demo: the flagship -3 deg approach (lon_scenario.yaml, identical
+# tune) onto a fetch-limited LAKE sea -- AHAB's actual operating surface.
 #
-# State X = [h, V, gamma, theta, q, T, Tdot]; control U = [delta_e, Tddot].
-# Nominal = constant thrust setpoint (PD on the T state) + cascade elevator law
-# holding a constant negative flight-path angle gamma. The CBF-QP filter then
-# enforces the recovery set: impact-load (HARD), stall/AoA, nose-up attitude,
-# total-energy ceiling, and the thrust actuator/validity guards. No airspeed floor.
+# Sea: JONSWAP gamma = 3.3 (Hasselmann 1973; the developing/fetch-limited
+# spectrum -- a lake cannot carry a developed sea), realized as 128 seeded Airy
+# components (water_waves.hpp). (Hs, Tp) from the USACE Coastal Engineering
+# Manual fetch-growth laws (EM 1110-2-1100 Part II-2) for U10 = 8 m/s over
+# ~3 km of fetch: Hs ~ 0.22 m, Tp ~ 1.8 s, lambda_p ~ 5 m. Head seas: at
+# V ~ 13 m/s the keel meets a new wave face every ~0.4 s and the local slope
+# peaks near the glide-slope angle -- the sizing case for the smooth-water
+# assumption (TODO.md).
 #
-# Defaults for theta_trim / T_set / gamma_ref come from a trim solve at
-# (V_app, gamma_app_deg); fields below override them.
+# Open-ocean reference (NATO STANAG 4194 Annex D, Bretschneider spectrum):
+# swap the waves block for
+#   gamma: 1.0, Hs: 0.9, Tp: 7.5     # sea state 3 most-probable pair
+# (lambda ~ 88 m: gentle 2-deg swell at this scale -- far off AHAB ops, kept as
+# the standards-referenced configuration.)
+#
+# The filter is WAVE-BLIND (flat-water barrier model, surface-relative
+# altimeter only): this scenario measures what the smooth-water CBF misses,
+# via the wave-referenced TN 1516 touchdown load in the console/touchdown
+# record vs its flat-water twin.
 # =============================================================================
 
 V_app: 18.0           # approach airspeed [m/s]
@@ -49,7 +61,7 @@ wind:
 # USACE CEM growth laws. regular: true collapses to one deterministic
 # component (Hs = crest-to-trough height).
 waves:
-  enabled: false
+  enabled: true
   regular: false
   Hs: 0.22            # significant wave height [m]
   Tp: 1.8             # peak (modal) period [s]

@@ -6,6 +6,7 @@
 #include "autoland/lon_cbf_filter.hpp"
 #include "autoland/lon_nominal.hpp"
 #include "autoland/mixing.hpp"
+#include "autoland/water_waves.hpp"
 #include "autoland/wind_gust.hpp"
 
 // =============================================================================
@@ -22,6 +23,7 @@ struct LonScenario {
   LonNominalConfig nominal;
   LonCBFConfig cbf;
   DiscreteGustConfig wind;  // MIL-F-8785C discrete gust, plant-side only
+  WaveConfig waves;         // Airy/JONSWAP surface-wave field, plant-side only
   LonStateVec X0{LonStateVec::Zero()};
   double dt{0.01};
   double t_max{60.0};
@@ -31,6 +33,16 @@ struct LonScenario {
 struct LonTouchdown {
   bool reached{false};
   double t{0}, sink{0}, V{0}, theta{0}, gamma{0};
+  // Wave-field contact record (all zero on flat water): surface elevation /
+  // slope under the aircraft at contact, keel altitude h and ground position x
+  // there, the SURFACE-relative closure rate -d/dt(h - eta) (the face may be
+  // rising into the path), and the exact TN 1516 peak-load truth evaluated
+  // flat-water- vs wave-referenced (tau / gamma0 tilted by the local surface
+  // angle, closure onto the moving surface). The filter saw only the
+  // flat-water quantities, so n_peak_wave / n_peak_flat is the factor the
+  // smooth-water assumption missed on this landing.
+  double h{0}, x{0}, eta{0}, slope{0}, sink_rel{0};
+  double n_peak_flat{0}, n_peak_wave{0};
   // Filter-health tallies over the whole run (also printed to the console):
   // best-effort feasibility recoveries and steps that dropped a HARD row. Both
   // are 0 on a healthy run; exposed so an end-to-end test can assert it.
@@ -86,7 +98,8 @@ class LonSim {
   LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
          const std::string& scenario_yaml);
 
-  // Run to touchdown (h<=0) or t_max. Writes a CSV trace to csv_path.
+  // Run to touchdown (h <= eta(x,t); flat-water 0) or t_max. Writes a CSV
+  // trace to csv_path.
   LonTouchdown run(const std::string& csv_path);
 
   // Full-run tallies (psi minima, envelope extrema, health counters); the

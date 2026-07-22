@@ -259,6 +259,24 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   wd.w.amp = getOr(yw, "w_amp", 0.0);
   wd.w.len = getOr(yw, "w_len", 120.0);
 
+  // --- Airy/JONSWAP surface-wave field (see water_waves.hpp), plant-side
+  // truth only: touchdown surface, radar-altimeter reference, and slam-load
+  // truth diagnostics. The nominal and the CBF-QP keep the flat-water model,
+  // so an enabled seaway probes the filter's smooth-water assumption.
+  YAML::Node yv = root["waves"];
+  WaveConfig& wv = sc_.waves;
+  wv.enabled = getOrB(yv, "enabled", false);
+  wv.regular = getOrB(yv, "regular", false);
+  wv.Hs = getOr(yv, "Hs", wv.Hs);
+  wv.Tp = getOr(yv, "Tp", wv.Tp);
+  wv.gamma = getOr(yv, "gamma", wv.gamma);
+  wv.n = static_cast<int>(getOr(yv, "n", wv.n));
+  wv.seed = static_cast<unsigned>(getOr(yv, "seed", wv.seed));
+  wv.phase_deg = getOr(yv, "phase_deg", wv.phase_deg);
+  wv.contact_len = getOr(yv, "contact_len", wv.contact_len);
+  if (yv && yv["direction"])
+    wv.dir = yv["direction"].as<std::string>() == "following" ? 1.0 : -1.0;
+
   sc_.dt = getOr(root, "dt", 0.01);
   sc_.t_max = getOr(root, "t_max", 60.0);
 
@@ -305,10 +323,20 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
   // Seed the filter state at the true initial altitude (no startup transient).
   const double h_lpf_alpha =
       sc_.cbf.h_lpf_tau > 0.0 ? dt / (sc_.cbf.h_lpf_tau + dt) : 1.0;
-  double h_filt = sc_.X0[LH];
+
+  // Surface-wave field (one locked, seeded sea; empty/zero when disabled). The
+  // altimeter chain below measures clearance over the INSTANTANEOUS surface
+  // (radar-altimeter physics), so h_filt is seeded at the initial clearance.
+  const WaveField wf = makeWaveField(sc_.waves);
+  double h_filt = sc_.X0[LH] - wf.eta(0.0, 0.0);
 
   // Gust penetration distance [m] (MIL-F-8785C discrete gust; 0 until onset).
   double x_gust = 0.0;
+  // Earth-frame ground track [m]: the wave-field abscissa under the aircraft.
+  // Feeds only eta(x, t) and the diagnostics, never the dynamics, so it is
+  // advanced by trapezoid outside the RK4 (error ~ mm against wavelengths of
+  // metres). xdot = V cos(gamma) + W_u (ground speed incl. gust transport).
+  double x_pos = 0.0;
 
   std::ofstream csv(csv_path);
   csv << "t,h,V,gamma_deg,theta_deg,q,T,Tdot,alpha_deg,sink,de,Tddot,"
@@ -319,7 +347,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
          "res_tmin,res_tmax,"
          "b_impact,n_peak,kappa_imp,psi1_imp,psi2_imp,res_imp,h_meas,h_filt,"
          "n_rows_dropped,hard_dropped,CL,CD,dCL_stall,W_u,W_h,x_gust,"
-         "b_efloor,psi1_efloor,psi2_efloor,psi3_efloor,res_efloor\n";
+         "b_efloor,psi1_efloor,psi2_efloor,psi3_efloor,res_efloor,"
+         "x,eta,eta_slope\n";
 
   LonStateVec X = sc_.X0;
   LonTouchdown td;
@@ -341,9 +370,18 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
 
   for (int k = 0; k <= nsteps; ++k) {
     const LonCtrlVec U_nom = nominal.step(X, dt);
-    // Sensor chain: true h -> add noise -> low-pass -> CBF. The true X is still
-    // integrated below and used for the diagnostics/touchdown test.
-    double h_meas = X[LH];
+    // Wave surface under the aircraft this step (identically 0 on flat water).
+    // The slope is the mean tilt across the hull contact length -- the slam
+    // geometry a keel of that length meets -- not the ripple-dominated point
+    // slope (see water_waves.hpp::slopeMean).
+    const double eta_now = wf.eta(x_pos, t);
+    const double eta_x = wf.slopeMean(x_pos, t, sc_.waves.contact_len);
+    // Sensor chain: radar-altimeter clearance over the instantaneous surface
+    // (true h - eta) -> add noise -> low-pass -> CBF. The filter therefore
+    // flies the surface-relative altitude but stays wave-BLIND otherwise (its
+    // barrier model keeps flat water; it never sees the slope). The true X is
+    // still integrated below and used for the diagnostics/touchdown test.
+    double h_meas = X[LH] - eta_now;
     if (sc_.cbf.h_meas_stddev > 0.0) h_meas += h_noise(h_rng);
     h_filt += h_lpf_alpha * (h_meas - h_filt);
     LonStateVec X_meas = X;
@@ -360,6 +398,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     // the vertical gust transport. Identical to -V sin(gamma) with wind off.
     const GustWind Wg = gustWind(sc_.wind, x_gust);
     const double sink = -(X[LV] * std::sin(X[LGAM]) + Wg.w);
+    // Ground speed (earth x rate): the wave-field advance under the aircraft.
+    const double xdot_gnd = X[LV] * std::cos(X[LGAM]) + Wg.u;
     const auto xa = toArray(X);
 
     // Flight-envelope extrema + plant-validity flag for the run stats.
@@ -503,11 +543,27 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
         << (hard_dropped ? 1 : 0) << ',' << CL_d << ',' << CD_d << ',' << dCL_stall << ','
         << Wg.u << ',' << Wg.w << ',' << x_gust << ','
         << befl(xa) << ',' << psi1_ef << ',' << psi2_ef << ',' << psi3_ef << ','
-        << res_ef << '\n';
+        << res_ef << ',' << x_pos << ',' << eta_now << ',' << eta_x << '\n';
 
-    if (X[LH] <= 0.0 && k > 0) {
+    if (X[LH] <= eta_now && k > 0) {
       td.reached = true;
       td.t = t; td.sink = sink; td.V = X[LV]; td.theta = X[LTH]; td.gamma = X[LGAM];
+      td.h = X[LH]; td.x = x_pos; td.eta = eta_now; td.slope = eta_x;
+      // Surface-relative closure -d/dt(h - eta) = sink + eta_x xdot + eta_t:
+      // what the keel actually closes at when the face is rising into the path.
+      td.sink_rel = sink + eta_x * xdot_gnd + wf.etaDot(x_pos, t);
+      // TN 1516 slam-load truth at contact, flat-water- vs wave-referenced
+      // (tau/gamma0 tilted by the local surface angle alpha_s, closure onto
+      // the moving surface -- the spec's rough-water referencing). The filter
+      // enforced only the flat-water model; the ratio is what it missed.
+      const double alpha_s = std::atan(eta_x);
+      td.n_peak_flat = impactNPeakExact(
+          aero.mass, aero.g, sc_.cbf.beta, sc_.cbf.rho_water, sc_.cbf.eps_g0,
+          X[LTH] - sc_.cbf.tau_keel, -X[LGAM], std::max(0.0, sink));
+      td.n_peak_wave = impactNPeakExact(
+          aero.mass, aero.g, sc_.cbf.beta, sc_.cbf.rho_water, sc_.cbf.eps_g0,
+          X[LTH] - alpha_s - sc_.cbf.tau_keel, alpha_s - X[LGAM],
+          std::max(0.0, td.sink_rel));
       break;
     }
     if (sc_.wind.enabled) {
@@ -519,6 +575,9 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
       // pre-gust plant (mirrors the stall_on pattern).
       X = rk4(table_, *mixing_, ac_, X, U, dt);
     }
+    // Ground-track trapezoid across the step (endpoint ground speeds).
+    x_pos += 0.5 * dt *
+             (xdot_gnd + X[LV] * std::cos(X[LGAM]) + gustWind(sc_.wind, x_gust).u);
     t += dt;
     ++stats_.steps;
   }
@@ -551,11 +610,32 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
               << sc_.wind.u.len << " m (+tailwind)  w: Vm=" << sc_.wind.w.amp
               << " m/s dm=" << sc_.wind.w.len << " m (+updraft)\n";
   }
+  if (sc_.waves.enabled) {
+    std::cout << "  Surface waves (plant-only, wave-blind filter): ";
+    if (sc_.waves.regular)
+      std::cout << "regular";
+    else if (sc_.waves.gamma <= 1.0)
+      std::cout << "Bretschneider (STANAG 4194)";
+    else
+      std::cout << "JONSWAP gamma=" << sc_.waves.gamma;
+    std::cout << "  Hs=" << sc_.waves.Hs << " m  Tp=" << sc_.waves.Tp << " s  "
+              << (sc_.waves.dir < 0 ? "head" : "following") << " seas\n";
+  }
   if (td.reached) {
     std::cout << "TOUCHDOWN  t=" << td.t << " s  sink=" << td.sink << " m/s"
               << "  V=" << td.V << " m/s  theta=" << td.theta / kDeg << " deg\n";
     std::cout << "  V_td_max cap=" << sc_.cbf.V_td_max << " m/s  -> "
               << (td.V <= sc_.cbf.V_td_max + 1e-6 ? "WITHIN" : "EXCEEDED") << "\n";
+    if (sc_.waves.enabled) {
+      std::cout << "  wave contact: eta=" << td.eta << " m  surface slope="
+                << std::atan(td.slope) / kDeg << " deg  sink_rel=" << td.sink_rel
+                << " m/s (flat-ref " << td.sink << ")\n";
+      std::cout << "  TN1516 n_peak truth: flat-ref=" << td.n_peak_flat
+                << " g  wave-ref=" << td.n_peak_wave << " g";
+      if (td.n_peak_flat > 1e-9)
+        std::cout << "  (x" << td.n_peak_wave / td.n_peak_flat << ")";
+      std::cout << "\n";
+    }
   } else {
     std::cout << "No touchdown within t_max=" << sc_.t_max << " s (final h="
               << X[LH] << ")\n";

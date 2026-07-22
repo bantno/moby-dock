@@ -67,6 +67,11 @@ python3 scripts/plot_lon_results.py lon_log.csv figures/lon_landing.png 14 16 50
 python3 scripts/plot_lon_zoom.py    lon_log.csv figures/lon_zoom.png    14 16 50 5
 # impact-load barrier detail
 python3 scripts/plot_lon_impact.py  lon_log.csv figures/lon_impact.png
+
+# landing on waves (plant-side JONSWAP/Airy sea, wave-blind filter):
+./build/lon_autoland_sim data/AHAB_combined.stab data/aircraft.yaml \
+    data/lon_landing_waves_lake.yaml results/lon_waves_lake.csv
+python3 scripts/plot_wave_landing.py results/lon_waves_lake.csv figures/lon_landing_waves.png
 ```
 
 `lon_autoland_sim [stab] [aircraft.yaml] [lon_scenario.yaml] [out.csv]` — all optional
