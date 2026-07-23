@@ -39,6 +39,278 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-18 — Brian — Surface-wave model (STANAG 4194 / JONSWAP), plant-side truth
+**Branch/commit:** stall-recovery-suite
+**What changed:** Linear Airy surface-wave field (`include/autoland/water_waves.hpp`, header-only,
+mirrors `wind_gust.hpp`): one JONSWAP spectrum implementation `S(w) = A_γ S_B(w) γ^b` whose
+`γ = 1` limit IS the two-parameter Bretschneider spectrum NATO STANAG 4194 prescribes with its
+Annex D open-ocean sea states, and whose `γ ≈ 3.3` is the fetch-limited (developing/LAKE) sea —
+one code path, the sea is a scenario parameter. Realization per the textbook chain (St. Denis &
+Pierson 1953; Fossen ch. 8; ITTC 7.5-02-07-01.1): N seeded components, `A_i = sqrt(2 S(w_i) dw)`,
+random phase + within-bin frequency jitter (non-periodic), deep-water dispersion `k = w²/g`;
+`regular: true` degenerates to one deterministic component. `eta/slope/etaDot` are exact closed
+forms; `slopeMean(x,t,L)` is the tilt across the hull contact length (`contact_len`, default
+0.4 m) — the point slope's spectrum `k²S` is ripple-dominated and would overstate the contact
+geometry a keel actually bridges.
+**Wiring (wave-BLIND filter, per design decision):** plant truth only — touchdown test is now
+`h <= eta(x,t)`; the altimeter measures RADAR clearance `h - eta` (so the filter flies the
+surface-relative altitude but its barrier model stays flat-water); new earth-frame ground track
+`x` (trapezoid outside RK4 — waves never force the airborne dynamics). `LonTouchdown` gains the
+contact record: `eta/slope/sink_rel` (closure `-d/dt(h-eta)`) and the exact TN 1516 load truth
+`n_peak_flat` vs `n_peak_wave` (tau/gamma0 tilted by the hull-mean surface angle, closure onto
+the moving face; via the new unfrozen `impactNPeakExact`, factored out of the barrier factory).
+CSV gains `x,eta,eta_slope`. Scenarios: `data/lon_landing_waves_lake.yaml` (JONSWAP γ3.3,
+Hs 0.22 / Tp 1.8 from the USACE CEM fetch laws at U10=8 m/s, F=3 km; head seas; STANAG SS3
+ocean alternative in comments), `data/lon_landing_wave_regular.yaml` (locked ctest twin).
+`scripts/plot_wave_landing.py` → `figures/lon_landing_waves.png`.
+**Why:** TODO's top physical-realism gap ("smooth-water assumption"). Source preference was
+mil-spec > textbook > paper: STANAG 4194 + USACE CEM parameterize the sea, the textbook layer
+realizes it, Hasselmann/Pierson-Moskowitz/Bretschneider are the roots.
+**Results:** 57/57 ctest (4 new `[waves]` cases: spectrum closed form + `m0 = Hs²/16` identity,
+realization variance/dispersion/determinism, regular-wave analytics incl. the advection identity,
+and the end-to-end surface touchdown). Lake demo: the wave-blind filter still meets its
+flat-water spec at contact (sink 0.209 m/s, V 13.37 — near-identical to the flat baseline) but
+the TRUTH is contact on a 7.7° rising face at 2.36 m/s surface closure: wave-referenced
+`n_peak` = 18.8 g vs 0.32 g flat-referenced (~59×, ~6× over `n_limit=3`). The smooth-water gap
+is now a measured number, and it motivates the stage-2 wave-aware barrier (TODO updated).
+**Caveats:** one seeded sea = one draw (sweep seeds/encounter phase before quoting statistics);
+`n_peak_wave` uses the clamped TN 1516 model well outside its validated attitude range when the
+face is steep (τ_w clamps at 1°) — read it as "far outside the flat-water design point", not as
+a calibrated load; deep-water dispersion assumed (fine for lake chop; shallow-water k would need
+the full dispersion relation).
+**Files touched:** `include/autoland/water_waves.hpp` (new), `include/autoland/impact_barrier.hpp`
+(`impactK0`/`impactNPeakExact` factored out), `include/autoland/lon_sim.hpp`, `src/lon_sim.cpp`,
+`test/test_water_waves.cpp` (new), `CMakeLists.txt`, `data/lon_scenario.yaml` (waves block, off),
+`data/lon_landing_waves_lake.yaml` (new), `data/lon_landing_wave_regular.yaml` (new),
+`scripts/plot_wave_landing.py` (new), `README.md`, `TODO.md`.
+
+## 2026-07-01 — Brian — Emergent stall-recovery test suite (Python driver + ctest layer)
+**Branch/commit:** stall-recovery-cbf
+**What changed:** End-to-end suite testing the core claim of the recovery-CBF design: on slow
+approaches that stall near the water, the CBF-QP recovers and lands safely even though the nominal
+(constant-γ + constant-T_set, no flare/recovery logic) never commands it. Three layers:
+- **`LonRunStats`** (`lon_sim.hpp/.cpp`, additive): psi minima per barrier over their ACTIVE
+  windows, `min_b_impact_active`, `min_res_impact_active` (enforced impact row with the APPLIED
+  control), envelope extrema (max α, min V, T range), `out_of_model` (|α| > 85° = stall-table
+  validity ceiling), `ic_trim_converged`; exposed via `LonSim::stats()` so tests assert without
+  CSV parsing. NOTE: drift-only psi2 goes legitimately negative when the QP spends authority —
+  the state-only invariance witness is psi1; enforcement is checked via the row residual.
+- **Locked scenarios** `data/lon_stall_pull_cbf.yaml` (nominal pulls into stall at 18 m, CBF-on
+  counterpart of the departure demo; T_set 1.2 — at 2.5 the α-capped mush CLIMBS) and
+  `data/lon_stall_entry_cbf.yaml` (+11° kick at 12 m → α₀≈19.8°, in-grid) +
+  **`test/test_stall_recovery.cpp`** (3 ctest cases: pull recovers @ sink 0.23 / θ +7.7°; entry
+  recovers @ sink 0.21 / θ +3.0°; CBF-off demo departs — guards the "emergent" premise).
+- **`scripts/stall_recovery_suite.py`** (reuses harness.py): 7 fixed cases × CBF-on(scored)/
+  CBF-off(informational A/B) — slow_bleed, pull_into_stall, stalled_entry, tailwind_shear (+4.5
+  m/s gust hitting 13 m, 2-pass t_start calibration), downdraft_flare, 2 noisy-sensor variants ×
+  3 seeds — plus a recovery-floor sweep (h0 {5..20} × kick {8,12,16}°). PASS/FAIL verdicts, exit
+  1 on failure; `--only/--skip-sweep/--replot/--strict/--set` (regression injection). Artifacts →
+  `runs/stall_suite/` (summary.md/.csv, per-case A/B PNGs, sweep heatmap).
+**Why:** Nothing exercised the filter's recovery behavior end-to-end (TODO: impact barrier
+"unverified off-nominal"); the suite makes the emergent-safety claim testable and rerunnable.
+**Results (current tuning):** 11/11 scored runs PASS; 53/53 ctest. Recovery floor: clean recovery
+from stalled entry down to **12 m** for all kicks; at 8 m and 5 m the outcome stays soft
+(sink ≤ 0.25 m/s) but the QP passes through best-effort feasibility recovery (enforced-row
+guarantee breaks transiently) → classified "recovered-degraded". Known gaps encoded in
+thresholds: (1) unmeasured downdraft breaks the still-air V_td cap by ~1.3–1.6 m/s (energy row's
+ḣ model is air-relative) — downdraft_flare carries V_td_tol=2.0 as the frozen baseline;
+wind-aware margins are future work. (2) With sensor noise the enforced-row residual on the TRUE
+state can dip at the touchdown step (filter still measures +6 cm) — residual check applies to
+noise-free runs only. (3) stalled_entry survives `cbf.stall=false` (nominal θ-loop damps the
+kick; ensemble lands it) — the stall row's regression detector is pull_into_stall, which departs
+to α=133° → INVALID without it.
+**Follow-ups / notes for collaborator:** impact row still never binds (see TODO note); sweep
+kicks 12/16° extrapolate the VSPAERO deck above +20° α at entry (Viterna blend dominates);
+`--strict` flags CBF-off runs that stop failing (scenario drift).
+**Files touched:** `include/autoland/lon_sim.hpp`, `src/lon_sim.cpp`, `test/test_stall_recovery.cpp`
+(new), `CMakeLists.txt`, `data/lon_stall_pull_cbf.yaml` (new), `data/lon_stall_entry_cbf.yaml`
+(new), `scripts/stall_recovery_suite.py` (new), `TODO.md`.
+
+## 2026-07-01 — Brian — MIL-F-8785C discrete wind gust model ("1-cosine")
+**Branch/commit:** stall-recovery-cbf
+**What changed:** Added the MIL-F-8785C discrete gust — the Simulink Aerospace Blockset
+"Discrete Wind Gust Model" block — as a plant-side disturbance for the longitudinal sim
+(`include/autoland/wind_gust.hpp`, header-only). Per axis V_wind = Vm/2·(1−cos(πx/dm)) over
+penetration distance x, with ẋ = V (airspeed) gated on `t_start`, exactly like the block's
+airspeed-integrator input; dm ≤ 0 degenerates to a step gust. Two axes in the vertical plane,
+**earth frame, h-up**: `u_amp` + = tailwind, `w_amp` + = updraft (a MIL body-frame w_g, positive
+down, is the negation). Plumbed into `lon_sim`: new `lonXdotFullWind` keeps the state air-relative
+(V, γ air-path ⇒ α = θ−γ stays the true AoA) and adds the exact wind terms — ḣ += W_h (kinematic
+transport) and the −Ẇ inertial forcing projected on path axes (steady wind only transports; only
+the gust *ramp* forces V/γ). x_gust is integrated jointly with X in RK4. **The nominal controller
+and CBF-QP keep the still-air model** — a gust run probes the filter against unmeasured wind (the
+TODO's "gust/shear injection"). YAML `wind:` block in `lon_scenario.yaml` (disabled by default;
+wind-off runs keep the old rk4 path, bit-identical). CSV gains `W_u,W_h,x_gust` columns; the
+`sink` column is now the *true inertial* −ḣ (= air-relative sink + W_h; unchanged wind-off).
+**Why:** Robustness testing of the recovery-CBF set demands a standard, citable gust disturbance.
+**Follow-ups / notes for collaborator:** Demo (tailwind 3 m/s + downdraft 1.5 m/s at t=20 s,
+dm=120 m, `figures/gust_demo_compare.png`): touchdown 31.3 s @ sink 1.27 m/s / V 15.45 m/s vs
+still-air 68.5 s @ 0.21 m/s / 13.37 m/s — V_td cap EXCEEDED because the filter can't see the wind.
+Wind-aware barrier margins (ISSf/tightened class-K) are the natural next step. MIL-8785C ties
+(Vm, dm) to turbulence intensity/scale; here they're free signed parameters like the block's.
+Removed the deprecated `test_cbf.cpp` case "CBF runs on the real linearized longitudinal model"
+(it exercised the old body-axis LinearModelCAM seam against `data/AHAB_sweep.stab`, a file no
+longer in the repo, so it could never run); full suite now 46/46 green.
+**Files touched:** `include/autoland/wind_gust.hpp` (new), `include/autoland/lon_sim.hpp`,
+`src/lon_sim.cpp`, `test/test_wind_gust.cpp` (new), `test/test_cbf.cpp`, `CMakeLists.txt`,
+`data/lon_scenario.yaml`, `figures/gust_demo_compare.png`.
+
+## 2026-07-01 — Brian — Recovery-set CBFs: impact + stall(AoA) + nose-up + total-energy
+**Branch/commit:** stall-recovery-cbf
+**What changed:** Replaced the CBF-QP barrier set. **Removed** the descent-rate, lower-airspeed,
+and upper-airspeed barriers (structs, config, YAML, wiring, CSV diagnostics, tests). **Kept** the
+hydrodynamic impact-load barrier — now the *only* hard safety row (`impact_hard` default flipped to
+true) — and the min/max-thrust actuator barriers (kept hard, reframed as the actuator-effectiveness
+/ HOCBF-validity guards: every elevator-driven barrier's control coefficient scales with dynamic
+pressure ∝ρV², so the thrust guards preserve the relative-degree structure). There is deliberately
+**no airspeed-floor CBF** — the AoA barrier handles stall directly. **Added** three barriers, all
+soft (slacked), with priority impact(hard) > stall > energy > nose-up encoded by slack weights
+1e5 > 1e4 > 1e3:
+- `StallBarrier` b = α_lim − (θ−γ), α_lim = α_stall − margin (rel. deg 2, elevator). The stall
+  guard; as α→α_lim the HOCBF drives the elevator nose-down — the pilot low-altitude stall recovery.
+- `NoseUpBarrier` b = θ − θ_min, gated to the final `h_noseup` metres (rel. deg 2). Holds θ above
+  the keel so the impact model's τ=θ−τ_keel>0 gate stays valid and the touchdown is nose-up; lowest
+  weight → yields to the stall guard on the shared elevator.
+- `EnergyBarrier` b = ½(V_td_max²−V²) + (g_eff−g)h (rel. deg 3, both controls). A **loose
+  never-exceed** total-specific-energy ceiling ⇔ descending airspeed cap
+  V ≤ √(V_td_max²+2(g_eff−g)h); bounds touchdown speed. `V_td_max` is the hull/structural touchdown
+  limit; `g_eff` sized so the ceiling starts satisfied. A *constant* energy cap is useless here (PE→KE
+  makes a glider arrive fast), hence the height schedule.
+All three are functions of *instantaneous* state only, so the set is **glide-path agnostic** — no
+barrier code change when the nominal later switches to the exponential-altitude flare.
+**Why:** Recover the pilot behavior at a low-altitude stall (pitch down + full elevator): the impact
+CBF regulates vertical touchdown rate, the energy CBF bounds horizontal/kinetic energy at touchdown,
+and the AoA barrier prevents stall while keeping the impact model valid.
+**Verification:** clean approach lands soft nose-up (sink 0.21 m/s, θ=+3°, V=13.4 < cap), impact
+(hard) satisfied throughout, 0 hard rows dropped. Feasible tight touchdown (`V_td_max=10`) → 0.03 m/s
+at V=11, θ=+7.3° (guard protective, α peaks 7.4°). The guard only *binds* and forces a hard nose-down
+landing when a **sub-stall** touchdown speed is demanded (`V_td_max=9` < V_stall≈9.7 → 3.18 m/s, α
+pinned <9°, i.e. no actual stall) — the honest insufficient-margin tradeoff. Operating rule:
+`V_td_max ≳ 1.1·V_stall` (~11) for a soft landing. `ctest` 42/43 (the 1 failure is **pre-existing**:
+legacy `test_cbf.cpp` needs missing `data/AHAB_sweep.stab`). Rewrote `test/test_lon_cbf.cpp`: closed
+forms, relative degrees, finite-difference flow-oracle drift stacks, and hard-enforcement for all
+three new barriers.
+**Follow-ups / notes for collaborator:** the nominal is still the constant-γ cascade (no flare yet),
+so the current soft touchdown comes from the impact barrier flaring near the water; when the
+exponential-altitude nominal lands, retune only `V_td_max`/`g_eff`/`theta_min`. `water_landing_cbf_math.md`
+is updated for the new set; `water_landing_cbf_design.md` still describes the old barriers — not yet updated.
+**Files touched:** `include/autoland/{hocbf,lon_cbf_filter,impact_barrier}.hpp`,
+`src/{lon_cbf_filter,lon_sim}.cpp`, `data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`scripts/{harness,plot_lon_results,plot_lon_zoom,plot_gain_compare,plot_lon_sensor_panels}.py`
+
+## 2026-06-30 — Brian — Add NACA 4414 viscous-stall plant model
+**Branch/commit:** stall-model
+**What changed:** The longitudinal plant can now **stall**. The base deck
+(`AHAB_combined.stab`) is inviscid VSPAERO (lift linear to ±20°, no stall, and its
+post-stall values are meaningless), so above stall onset the plant **hands the lift off**
+from VSPAERO to a viscous + flat-plate post-stall curve via a blend:
+`C_plant = (1−w)·C_vspaero + w·C_post`. The blend weight `w(α)` smoothsteps 0→1 across the
+wing stall, so VSPAERO is **discarded** (weighted to zero) above onset. `C_post` is a
+**Viterna & Corrigan flat-plate extrapolation** (standard BEM post-stall method) anchored at
+the wing stall point, so the lift **craters off CLmax and declines to 0 at 90°** while drag
+rises to `CD_max ≈ 1.23`. The 4414 **2D viscous polar** (NeuralFoil, an Xfoil surrogate, Re
+~2.5×10⁵) sets the realistic CLmax level. New files: generators
+`scripts/{gen_4414_polar,precompute_stall_table}.py` → committed table
+`include/autoland/naca4414_stall_table.hpp` (`w/CLpost/CDpost/CMpost(α)` to 90°); lookup
+`include/autoland/stall_model.hpp` (`stallLookup`, value+slope, mirrors `clfLookup`); blend
+frozen in `makeAeroLocal` and applied in `LonDrift` (`src/lon_augmented.cpp`,
+`lon_augmented.hpp`). Config: `AircraftConfig::stall {enabled,severity}` (`config.{hpp,cpp}`,
+`aircraft.yaml`, default **OFF**), with an optional scenario-level `stall:` override
+(`lon_sim.cpp`). Diagnostics: CSV gains `CL,CD,dCL_stall`; `scripts/plot_stall_model.py` →
+`figures/stall_model_check.png`. Demo scenario `data/lon_stall_recovery.yaml`.
+**Why:** Stall-recovery control work needs a plant that actually stalls. The inviscid deck
+cannot — it lifts linearly forever — so there is nothing to recover from. VSPAERO's only
+"stall" option is a CLmax clamp (a plateau, not a departure), and its inviscid lift past stall
+is fiction; we need the real lift crater + drag rise + pitch break, with VSPAERO thrown out
+above onset.
+**Design choices:**
+- **Blend, not additive deltas.** `(1−w)·C_vspaero + w·C_post` discards VSPAERO above onset
+  (the user's point: VSPAERO doesn't model stall at all, so blending *toward* its post-stall
+  values is wrong). An earlier additive `ΔCL = CL_vspaero·(f−1)` formulation was scrapped: it
+  kept multiplying the (fictional) rising inviscid lift, and the deep-stall tail plateaued
+  instead of cratering.
+- **Viterna flat-plate tail.** Standard post-stall extrapolation: lift follows `sin 2α` to 0 at
+  90°, drag → `CD_max = 1.11+0.018·AR`. Replaces the non-physical plateau; deep stall now
+  craters.
+- **Frozen-affine, shared plant+CBF.** Lives in `makeAeroLocal`, frozen as local-affine
+  `{off + slope·α}` for `w` and each post-coefficient, so it reuses the exact-Lie path; the
+  plant re-freezes each RK4 substep. `w=0` in attached flow ⇒ the CBF is untouched.
+- **Stall point is a tunable knob, not truth.** NeuralFoil→Xfoil→reality is weakest at low-Re
+  post-stall; onset/level are generator knobs (`A_STALL_DEG`, `BLEND_HALF_DEG`, `SEVERITY`).
+  Defaults: CLmax ≈ **1.44 @ 11°** (≤ the 2D section CLmax 1.46), → 0.80 by 45°, 0 at 90°.
+- **OFF by default**, the disabled `LonDrift` path runs zero extra ops. Valid to ~90° α (table
+  clamps above; a tumble past 90° is outside the model).
+**Verified:** Nominal approach **bit-identical** stall on vs off (`max|Δh|=max|Δδe|=0`,
+`dCL_stall≡0`, max α≈2°). 5 new `[stall]` tests pass (lookup inert/held/interp; post-stall
+lift-decline-to-zero + drag-rise; blend hands CL/CD to the Viterna values and cuts lift).
+End-to-end `lon_stall_recovery` departs: climbs to CLmax≈1.42 @ α≈11°, then lift craters
+(0.90 @ 28°, 0.45 @ 69°, 0 @ 97°), CD→1.23, sink builds to ~10 m/s. Full suite: only the
+**pre-existing** `#19` fails (missing `AHAB_sweep.stab`, unrelated).
+**Follow-ups / notes for collaborator:** calibrate onset/level vs experimental low-Re 4414 or
+flight ID; optional 2nd table axis over Re; optional Goman–Krabrov separation **state** for
+dynamic-stall lag (doubles as a CBF state); wire an α-margin recovery barrier; optionally link
+the descent barrier's `CL_max` knob to the plant CLmax (~1.44). CSV gained 3 columns —
+name-keyed plot scripts unaffected.
+**Files touched:** `include/autoland/{naca4414_stall_table,stall_model,lon_augmented,config}.hpp`,
+`src/{lon_augmented,config,lon_sim}.cpp`, `scripts/{gen_4414_polar,precompute_stall_table,
+plot_stall_model}.py`, `data/{aircraft.yaml,lon_stall_recovery.yaml,naca4414_polar.csv}`,
+`test/test_stall_model.cpp`, `CMakeLists.txt`,
+`documentation/{stall_model_spec,water_landing_cbf_design,CHANGELOG}.md`, `README.md`, `TODO.md`.
+
+## 2026-06-28 — Brian — Add hydrodynamic impact-load HOCBF barrier (NACA TN 1516)
+**Branch/commit:** water-impact-cbf
+**What changed:** New independent CBF-QP row that bounds the **peak CG load factor at
+water touchdown**, derived from NACA TN 1516 (Milwitzky 1948). The barrier is
+`b = (n_limit − n_peak(θ,γ,V)) + Φ(z)` with `n_peak = K0·ẏ₀²·Clf(κ)` (peak load factor,
+g), the approach parameter `κ = sin τ/sin γ₀ · cos(τ+γ₀)`, and a height-relaxed term
+`Φ(z) = Nb(1−e^{−z/zs})` that makes it touchdown-only. New files: an offline precompute
+`scripts/precompute_impact_clf.py` (solves the transcendental eq 27 for the velocity
+ratio, evaluates eq 25, verifies the `Clf(0)=0.6123` anchor) → generated table
+`include/autoland/impact_clf_table.hpp`; the barrier itself in
+`include/autoland/impact_barrier.hpp` (`clfLookup`, `ImpactLoadBarrier`,
+`makeImpactLoadBarrier`). Wired into `LonCBFFilter` behind an `impact`/`impact_hard`
+flag set with new config (`n_limit`, `beta`, `rho_water`, `Nb`, `zs`, `tau_keel`,
+`z_gate`, `eps_g0`, `impact_slack_lo/hi`, `c_impact`) in `LonCBFConfig` +
+`lon_scenario.yaml` + the `lon_sim` loader. Added an `exp()` overload to the Taylor-jet
+Lie engine (`lie_taylor.hpp`) for `Φ`. The sim logs `b_impact,n_peak,kappa_imp` and the
+degree-2 `psi1/psi2_imp` + `res_imp`, and prints the impact ψ-minima.
+**Why:** Bound the structural *slam load* at hull contact — which depends on dead rise,
+trim, and sink rate, not just sink rate (the descent barrier's kinematic cap). This is
+the attitude-coupled contact-load constraint flagged as the §3.3 research item.
+**Design choices:**
+- **Degree-2 HOCBF, elevator-enforced.** The barrier is relative degree 2 via the
+  elevator (θ→q→δe) and 3 via thrust (T→Tdot→Tddot). A single affine row can't mix the
+  two (the elevator's degree-2 entry pushed to degree 3 yields non-affine u²/u̇ terms),
+  so it's built as a clean degree-2 row (`barrierLie<2>` + 2 class-K gains): thrust's
+  column in `L_gL_f b` is exactly 0 and drops out; the flare enforces it. Thrust still
+  bounds impact load via the existing descent/sink-rate barrier (spec §4).
+- **Frozen K0 + local-affine `Clf(κ)`** at the eval point (mirrors `makeDescentBarrier`),
+  so the templated barrier is smooth with no cbrt/pow in the Taylor path while the
+  attitude coupling stays live through `κ`.
+- **Activation:** Option A height-relaxed `Φ(z)` (primary) + Option C height-scheduled
+  slack (`impact_slack_lo→hi`) backstop. Plus a **model-validity gate** — the row is only
+  assembled below `z_gate` AND while descending with positive trim (NACA TN 1516's
+  validity domain); outside it the prediction is meaningless (κ<0) and would feed a
+  huge-coefficient row to the QP.
+- **Placeholders:** `n_limit=3 g`, `beta=22.5°`, `rho_water=1000` (fresh), `Nb=10`,
+  `zs=2 m`. Soft + enabled by default and sized **non-binding** (additive safety, zero
+  trajectory change), mirroring how the upper-airspeed barrier was introduced.
+**Verified:** **34/35 tests pass** — incl. 6 new (clfLookup monotone/clamp, closed-form
+value, relative-degree thrust-drops-out, drift flow-oracle for the degree-2 stack +
+`exp()`, Φ height-relaxation, hard-enforcement under a violating nominal). The 1
+remaining failure (`#19`, `test_cbf.cpp`) is **pre-existing** (old body-axis path, throws
+unrelated to this work). Default sim run **unchanged**: touchdown 0.0137 m/s, 0
+recoveries; `impact: min psi1=5.84, psi2=14.11 ≥ 0`; over the active window
+`n_peak ≤ 0.17 g « n_limit=3`, `κ∈[0.001,1.149]`, slack ≡ 0 (row never binds).
+**Follow-ups / notes for collaborator:** `n_limit`/`beta`/`Nb`/`zs`/`c_impact` need
+calibration/tuning (new `TODO.md` items). The full mixed-degree (2/3) treatment and a
+predictive/backup-set CBF remain open (§3.3). CSV gained 6 columns — name-keyed plot
+scripts are unaffected. Source paper added at `documentation/19930082553.pdf`.
+**Files touched:** `include/autoland/{lie_taylor,impact_barrier,impact_clf_table,
+lon_cbf_filter}.hpp`, `src/{lon_cbf_filter,lon_sim}.cpp`, `scripts/precompute_impact_clf.py`,
+`data/lon_scenario.yaml`, `test/test_lon_cbf.cpp`,
+`documentation/{impact_load_barrier_spec,water_landing_cbf_design,CHANGELOG}.md`, `TODO.md`.
+
 ## 2026-06-27 — Jack — Add maximum-airspeed (over-speed) HOCBF barrier
 
 **Branch/commit:** corbin-dev

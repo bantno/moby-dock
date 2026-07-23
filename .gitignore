@@ -12,6 +12,15 @@ lon_autoland_log*.csv
 lon_trajectory*.png
 lon_compare*.png
 
+# Harness run artifacts (CSV / resolved scenario / log / figure per run)
+runs/
+
+# Raw sim output CSVs (regenerate with the harness / sim binaries)
+results/
+
+# Python bytecode cache
+__pycache__/
+
 # Personal Claude session context (per-developer, not shared)
 CLAUDE.md
 PROJECT_CONTEXT.md

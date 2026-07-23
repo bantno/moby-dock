@@ -118,7 +118,11 @@ StateVec Dynamics::xdot(const StateVec& x, const CtrlVec& u) const {
 
   // Rotational dynamics. Solve the coupled p-r system with the Ixz product term.
   const double Gamma = I.Ixx * I.Izz - I.Ixz * I.Ixz;
-  const double rhsL = Lm - (I.Izz - I.Iyy) * q * r - I.Ixz * p * q;
+  // Roll:  Ixx pdot - Ixz rdot = L + Ixz p q - (Izz - Iyy) q r
+  // Yaw:   Izz rdot - Ixz pdot = N - Ixz q r - (Iyy - Ixx) p q
+  // (from hdot + omega x h = M with h = [Ixx p - Ixz r, Iyy q, Izz r - Ixz p];
+  // expanding the Gamma solve below reproduces Stevens & Lewis.)
+  const double rhsL = Lm - (I.Izz - I.Iyy) * q * r + I.Ixz * p * q;
   const double rhsN = Nm - (I.Iyy - I.Ixx) * p * q - I.Ixz * q * r;
   const double pdot = (I.Izz * rhsL + I.Ixz * rhsN) / Gamma;
   const double rdot = (I.Ixx * rhsN + I.Ixz * rhsL) / Gamma;

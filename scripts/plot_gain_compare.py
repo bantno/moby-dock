@@ -61,8 +61,8 @@ ax[1, 1].grid(alpha=0.3); ax[1, 1].legend(fontsize=8)
 
 # Row 3-4: the four barrier functions (each own axes). b >= 0 is the safety
 # criterion -- if these stay positive the run was safe.
-plot(ax[2, 0], lambda D: D["b_descent"], "Barrier: descent-rate b", "b_descent", zero=True)
-plot(ax[2, 1], lambda D: D["b_airspeed"], "Barrier: airspeed b_V", "b_airspeed", zero=True)
+plot(ax[2, 0], lambda D: D["b_stall"], "Barrier: stall/AoA b", "b_stall", zero=True)
+plot(ax[2, 1], lambda D: D["b_impact"], "Barrier: impact (HARD) b", "b_impact", zero=True)
 plot(ax[3, 0], lambda D: D["T"], "Barrier: min-thrust (b = T)", "T [N]", zero=True)
 plot(ax[3, 1], lambda D: Tmax - D["T"], "Barrier: max-thrust (b = Tmax - T)", "Tmax - T [N]", zero=True)
 

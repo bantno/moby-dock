@@ -1,0 +1,47 @@
+# =============================================================================
+# LOCKED suite scenario: pull-into-stall with the CBF filter ON.
+#
+# The CBF-on counterpart of the stall-departure demo (lon_stall_recovery.yaml),
+# moved down to low altitude: the nominal commands an unsustainable climb
+# (gamma_ref = +22 deg on ~2.5 N of thrust) and, left alone, pitches up until
+# the wing stalls and the aircraft departs (that raw departure IS the demo).
+# Here the safety filter must override the nominal near the water: the stall
+# row takes the elevator nose-down as alpha -> alpha_lim, and the impact /
+# nose-up / energy rows shape the resulting descent into a safe touchdown.
+# The nominal contains no recovery logic -- everything safe about this landing
+# is emergent CBF behavior.
+#
+# LOCKED: test/test_stall_recovery.cpp asserts against this file, and
+# scripts/stall_recovery_suite.py uses it as the pull_into_stall base. Edit the
+# numbers only together with the thresholds in both layers.
+# =============================================================================
+
+V_app: 16.0
+gamma_app_deg: 22.0    # commanded steep climb the thrust/energy cannot hold
+dt:    0.01
+t_max: 120.0           # the capped mush descends ~0.25 m/s; lands ~100 s
+cbf_enabled: true      # THE difference vs the CBF-off demo
+
+stall:
+  enabled: true        # viscous-stall overlay ON (inviscid deck cannot stall)
+  severity: 1.0
+
+initial:
+  h0:          18.0    # low: the recovery has to happen near the water
+  dV:           0.0
+  dtheta_deg:   0.0
+
+nominal:
+  T_set: 1.2                 # low thrust: with alpha capped at 9 deg the drag
+                             # collapses, so 2.5 N sustains a mush CLIMB --
+                             # 1.2 N forces the mush to descend and land
+  Kp_T:  4.0
+  Kd_T:  4.0
+  Kp_gamma: 2.0
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 32.0    # enough pitch authority to drive AoA past stall
+  Kp_theta: 1.0              # real-Iyy gains (defaults 6.0/1.5 are for the
+  Kq:       0.25             # placeholder inertia and feather the elevator)
+
+# cbf: block intentionally omitted -> code defaults: all barriers on, impact
+# HARD, alpha_lim = 9 deg, Tmax = T_static, no sensor noise (deterministic).

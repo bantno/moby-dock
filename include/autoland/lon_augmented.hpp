@@ -48,6 +48,16 @@ struct AeroLocal {
   double off_CFz{0}, dAlpha_CFz{0}, dMach_CFz{0}, dQ_CFz{0};
   double off_CMy{0}, dAlpha_CMy{0}, dMach_CMy{0}, dQ_CMy{0};
   double dDe_CMy{0};  // d(C_my)/d(virtual delta_e), through the mixing matrix
+  // Viscous-stall blend, frozen as local affine models {off + slope*alpha} from
+  // the NACA 4414 table (stall_model.hpp). LonDrift blends the wind-axis CL/CD and
+  // CMy from VSPAERO (attached) toward the absolute post-stall coefficients:
+  // C = (1-w)*C_vspaero + w*C_post. Default off (w => 0) => identical to the
+  // inviscid deck. See documentation/stall_model_spec.md.
+  bool stall_on{false};
+  double off_w{0}, dAlpha_w{0};            // blend weight w(alpha) in [0,1]
+  double off_CLp{0}, dAlpha_CLp{0};        // absolute post-stall CL/CD/CM
+  double off_CDp{0}, dAlpha_CDp{0};
+  double off_CMp{0}, dAlpha_CMp{0};
 };
 
 // Build AeroLocal at flight condition (V, alpha) [SI, rad]. Looks up the aero
@@ -80,11 +90,25 @@ struct LonDrift {
     const T CMy = a.off_CMy + a.dAlpha_CMy * alpha + a.dMach_CMy * mach + a.dQ_CMy * qhat;
 
     const T sa = sin(alpha), ca = cos(alpha);
-    const T CD = CFx * ca + CFz * sa + a.parasite_CD0;  // wind-axis, beta=0
-    const T CL = (-1.0) * CFx * sa + CFz * ca;
+    T CD = CFx * ca + CFz * sa + a.parasite_CD0;  // wind-axis, beta=0 (attached)
+    T CL = (-1.0) * CFx * sa + CFz * ca;
+    T CMm = CMy;
+    // Viscous-stall blend (frozen local affine in alpha). Applied ONLY when
+    // stall_on, so the disabled path executes zero extra ops and is bit-identical
+    // to the inviscid deck. Above the wing stall the blend weight w -> 1 and the
+    // coefficients hand off to the absolute Viterna post-stall curve, so VSPAERO's
+    // meaningless post-stall values are weighted out. The flag is a per-evaluation
+    // constant, not a state branch, so the Taylor/autodiff jet stays valid and the
+    // affine blend keeps the in-cell Lie derivatives exact.
+    if (a.stall_on) {
+      const T w = a.off_w + a.dAlpha_w * alpha;
+      CD = (T(1.0) - w) * CD + w * (a.off_CDp + a.dAlpha_CDp * alpha);
+      CL = (T(1.0) - w) * CL + w * (a.off_CLp + a.dAlpha_CLp * alpha);
+      CMm = (T(1.0) - w) * CMm + w * (a.off_CMp + a.dAlpha_CMp * alpha);
+    }
     const T Lift = qbar * a.Sref * CL;
     const T Drag = qbar * a.Sref * CD;
-    const T M = qbar * a.Sref * a.cref * CMy + Tr * a.zcp;
+    const T M = qbar * a.Sref * a.cref * CMm + Tr * a.zcp;
 
     const T sg = sin(gam), cg = cos(gam);
     std::array<T, NXA> dX;

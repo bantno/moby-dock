@@ -21,85 +21,103 @@
 // =============================================================================
 namespace autoland {
 
-// --- Barriers (templated on element type so the Lie engine can autodiff them) -
-// Descent (soft-landing) barrier  b = V sin(gamma) + sqrt(v_safe^2 + 2 a_brk h),
-// with the braking acceleration now SPEED / PATH-ANGLE dependent (lift + drag +
-// gravity), not a constant:
-//   a_brk(V,gamma) = (rho V^2 S / 2m)[CLmax cos(gamma) - CDmaxlift sin(gamma)] - g
-// Thrust is deliberately omitted: putting the thrust state T / pitch theta into b
-// would drop the barrier's relative degree below 3 and break the augmented HOCBF
-// alignment (that theta-coupling is the section 3.3 mixed-degree problem). Lift
-// and drag depend only on (V, gamma) -- already in b -- so degree 3 is preserved.
-// Build via makeDescentBarrier() so the frozen-aero constants get filled in.
-struct DescentBarrier {
-  double v_safe2{0};
-  double rho{0}, Sref{0}, mass{0}, g{0};  // environment / geometry
-  double CLmax{0}, CDmaxlift{0};          // stall ceiling + its drag coefficient
+// --- Barriers (templated on element type so the Lie engine can autodiff them) --
+// Recovery-set barriers: stall (AoA upper), nose-up (attitude lower), and a total-
+// specific-energy ceiling. All are linear/polynomial in the state => C-infinity
+// (no eps floors needed); relative degrees follow from the g-matrix (elevator only
+// enters via G(LQ,LDE), Tddot only via G(LTDOT,LTDDOT)). The impact-load barrier
+// lives in impact_barrier.hpp; the thrust actuator barriers are below.
+
+// Stall (AoA upper bound). b = alpha_lim - (theta - gamma), alpha_lim = alpha_stall
+// - margin. Active the WHOLE flight; as alpha -> alpha_lim the HOCBF drives the
+// elevator nose-down (saturating at the boundary), reproducing the pilot's low-
+// altitude stall recovery. Relative degree 2 (elevator: theta->q->de); Tddot is
+// absent from the degree-2 control row. Class-K size 2.
+struct StallBarrier {  // b = alpha_lim - (theta - gamma)
+  double alpha_lim{0};
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
-    using std::cos;
-    using std::sin;
-    using std::sqrt;
-    const T V = X[LV], gam = X[LGAM];
-    const T a_brk = (0.5 * rho * Sref / mass) * (V * V) *
-                        (CLmax * cos(gam) - CDmaxlift * sin(gam)) - g;
-    return V * sin(gam) + sqrt(v_safe2 + (2.0 * a_brk) * X[LH]);
+    return alpha_lim - (X[LTH] - X[LGAM]);
   }
 };
-
-// Drag coefficient at the max-lift condition (q = 0), used by a_brk's drag term.
-// The inviscid table has no true stall, so we linearly extrapolate to alpha_max
-// where the rotated C_L = CLmax (one Newton-style step about alpha = 0) and
-// evaluate the rotated C_D there. Cheap and approximate; the drag term itself is
-// a small (~sin gamma) correction.
-inline double cdAtMaxLift(const AeroLocal& a, double CLmax, double V) {
-  const double mach = V / a.a_sound;
-  const double CFx0 = a.off_CFx + a.dMach_CFx * mach;  // alpha = 0, q = 0
-  const double CFz0 = a.off_CFz + a.dMach_CFz * mach;
-  const double CL0 = CFz0;                     // -CFx0 sin0 + CFz0 cos0
-  const double dCL_da0 = a.dAlpha_CFz - CFx0;  // d/dalpha[-CFx sin + CFz cos]|_0
-  const double amax =
-      (std::abs(dCL_da0) > 1e-9) ? (CLmax - CL0) / dCL_da0 : 0.0;
-  const double CFx = a.off_CFx + a.dAlpha_CFx * amax + a.dMach_CFx * mach;
-  const double CFz = a.off_CFz + a.dAlpha_CFz * amax + a.dMach_CFz * mach;
-  return CFx * std::cos(amax) + CFz * std::sin(amax) + a.parasite_CD0;
+inline StallBarrier makeStallBarrier(double alpha_stall, double margin) {
+  return StallBarrier{alpha_stall - margin};
 }
 
-// Build the descent barrier from the frozen aero + config, filling in the
-// a_brk(V,gamma) constants (including the max-lift drag coefficient at V).
-inline DescentBarrier makeDescentBarrier(const AeroLocal& a, double v_safe,
-                                         double CLmax, double V) {
-  DescentBarrier b;
-  b.v_safe2 = v_safe * v_safe;
-  b.rho = a.rho;
-  b.Sref = a.Sref;
-  b.mass = a.mass;
-  b.g = a.g;
-  b.CLmax = CLmax;
-  b.CDmaxlift = cdAtMaxLift(a, CLmax, V);
+// Nose-up (attitude lower bound). b = theta - theta_min. THETA-based (not alpha):
+// it directly keeps the impact model's gate tau = theta - tau_keel > 0 valid (an
+// AoA floor would not, since a steep gamma lets theta = alpha + gamma go negative),
+// and gives a clean degree 2 (theta->q->de) with no gamma coupling. Set theta_min
+// >= tau_keel. Gated to the final metres in the wiring. Relative degree 2, class-K
+// size 2.
+struct NoseUpBarrier {  // b = theta - theta_min
+  double theta_min{0};
+  template <class T>
+  T operator()(const std::array<T, NXA>& X) const {
+    return X[LTH] - theta_min;
+  }
+};
+inline NoseUpBarrier makeNoseUpBarrier(double theta_min) {
+  return NoseUpBarrier{theta_min};
+}
+
+// Total-specific-energy ceiling. E = 1/2 V^2 + g h, capped by a height-scheduled
+// ceiling E_cap(h) = 1/2 V_td_max^2 + g_eff h (g_eff sized so E_cap(h0) >= E0, so
+// it starts satisfied, and E_cap(0) = 1/2 V_td_max^2 bounds the touchdown speed):
+//   b = E_cap(h) - E = 1/2 (V_td_max^2 - V^2) + (g_eff - g) h.
+// POLYNOMIAL in (V,h) => C-infinity, NO sqrt: the equivalent airspeed cap
+// V <= sqrt(V_td_max^2 + 2 (g_eff-g) h) is b>=0 solved for V, never formed. Only
+// V,h enter b (not theta/T), so the degree-3 alignment is preserved. Relative
+// degree 3 (both controls enter at the 3rd derivative); class-K size 3. Set up as
+// a LOOSE never-exceed ceiling (see lon_cbf_filter.hpp), independent of glide path.
+struct EnergyBarrier {
+  double half_Vtd2{0};  // 1/2 V_td_max^2
+  double dgeff{0};      // g_eff - g
+  template <class T>
+  T operator()(const std::array<T, NXA>& X) const {
+    const T V = X[LV];
+    return half_Vtd2 - (0.5 * V * V) + dgeff * X[LH];
+  }
+};
+inline EnergyBarrier makeEnergyBarrier(const AeroLocal& a, double V_td_max,
+                                       double g_eff) {
+  EnergyBarrier b;
+  b.half_Vtd2 = 0.5 * V_td_max * V_td_max;
+  b.dgeff = g_eff - a.g;  // freeze true g from the aero/env
   return b;
 }
 
-struct AirspeedBarrier {  // b_V = V - V_min
-  double Vmin{0};
+// Total-specific-energy FLOOR (OPT-IN, default off -- the recovery set's stall
+// guard is AoA-based and deliberately carries no always-on airspeed floor; this
+// row exists to add the POWERED half of the stall recovery when wanted). Dual
+// of the ceiling above: E >= E_floor(h) = 1/2 V_floor^2 + g_floor h, i.e.
+//   b = E - E_floor(h) = 1/2 (V^2 - V_floor^2) + (g - g_floor) h >= 0
+//   <=>  V >= sqrt(V_floor^2 + 2 (g_floor - g) h).
+// g_floor = g degenerates to a pure airspeed floor V >= V_floor at every
+// height; g_floor < g relaxes the floor with altitude (potential energy in the
+// bank can be dived off for speed). Same structure as the ceiling: polynomial
+// in (V,h), relative degree 3 for BOTH controls -- but with OPPOSITE authority
+// signs, so when it binds the QP throttles UP and noses DOWN. This is exactly
+// the channel the (elevator-only, degree-2) stall row cannot command: thrust
+// enters that row's dot(b) only through the state T, two integrators upstream
+// of Tddot, so its degree-2 control column is identically zero.
+struct EnergyFloorBarrier {
+  double half_Vfl2{0};  // 1/2 V_floor^2
+  double dgfl{0};       // g - g_floor
   template <class T>
   T operator()(const std::array<T, NXA>& X) const {
-    return X[LV] - Vmin;
+    const T V = X[LV];
+    return (0.5 * V * V) - half_Vfl2 + dgfl * X[LH];
   }
 };
-
-// Upper airspeed barrier b = V_max - V >= 0 (over-speed / high-energy water-
-// impact / structural-limit protection). Same relative degree (3) and control-
-// affine structure as the lower airspeed barrier -- signs flip -- so it reuses
-// the existing machinery (barrierLie<3> -> hocbfRow). Wired into LonCBFFilter via
-// the airspeed_upper flag + Vmax_air in LonCBFConfig (mirrors the lower barrier).
-struct AirspeedUpperBarrier {  // b = V_max - V
-  double Vmax{0};
-  template <class T>
-  T operator()(const std::array<T, NXA>& X) const {
-    return Vmax - X[LV];
-  }
-};
+inline EnergyFloorBarrier makeEnergyFloorBarrier(const AeroLocal& a,
+                                                 double V_floor,
+                                                 double g_floor) {
+  EnergyFloorBarrier b;
+  b.half_Vfl2 = 0.5 * V_floor * V_floor;
+  b.dgfl = a.g - g_floor;
+  return b;
+}
 
 // --- Lie-derivative bundle for a relative-degree-R barrier --------------------
 template <int R>

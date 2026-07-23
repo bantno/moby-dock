@@ -1,0 +1,166 @@
+# =============================================================================
+# Wave-landing demo: the flagship -3 deg approach (lon_scenario.yaml, identical
+# tune) onto a fetch-limited LAKE sea -- AHAB's actual operating surface.
+#
+# Sea: JONSWAP gamma = 3.3 (Hasselmann 1973; the developing/fetch-limited
+# spectrum -- a lake cannot carry a developed sea), realized as 128 seeded Airy
+# components (water_waves.hpp). (Hs, Tp) from the USACE Coastal Engineering
+# Manual fetch-growth laws (EM 1110-2-1100 Part II-2) for U10 = 8 m/s over
+# ~3 km of fetch: Hs ~ 0.22 m, Tp ~ 1.8 s, lambda_p ~ 5 m. Head seas: at
+# V ~ 13 m/s the keel meets a new wave face every ~0.4 s and the local slope
+# peaks near the glide-slope angle -- the sizing case for the smooth-water
+# assumption (TODO.md).
+#
+# Open-ocean reference (NATO STANAG 4194 Annex D, Bretschneider spectrum):
+# swap the waves block for
+#   gamma: 1.0, Hs: 0.9, Tp: 7.5     # sea state 3 most-probable pair
+# (lambda ~ 88 m: gentle 2-deg swell at this scale -- far off AHAB ops, kept as
+# the standards-referenced configuration.)
+#
+# The filter is WAVE-BLIND (flat-water barrier model, surface-relative
+# altimeter only): this scenario measures what the smooth-water CBF misses,
+# via the wave-referenced TN 1516 touchdown load in the console/touchdown
+# record vs its flat-water twin.
+# =============================================================================
+
+V_app: 18.0           # approach airspeed [m/s]
+gamma_app_deg: -3.0   # nominal flight-path angle [deg] (negative = descent)
+
+dt:    0.01
+t_max: 200.0
+cbf_enabled: true
+
+initial:
+  h0:          40.0   # start altitude AGL [m]
+  dV:           0.0   # V0 = V_app + dV
+  dgamma_deg:   0.0   # gamma0 = gamma_app + dgamma
+  dtheta_deg:   0.0   # theta0 = theta_trim + dtheta
+
+# --- Discrete wind gust (MIL-F-8785C "1-cosine"; Simulink Discrete Wind Gust
+# Model equivalent). PLANT disturbance only -- the nominal controller and the
+# CBF-QP keep the still-air model, so an enabled gust tests the safety filter
+# against unmeasured wind. Per axis: V_wind = Vm/2 (1 - cos(pi x/dm)) over the
+# penetration distance x, with xdot = V (airspeed) after t_start. Earth frame,
+# h-up: u_amp > 0 = tailwind, w_amp > 0 = updraft (a MIL body-frame w_g,
+# positive down, is the negation of w_amp).
+wind:
+  enabled: false
+  t_start: 5.0        # gust onset [s]
+  u_amp:  -3.0        # horizontal gust amplitude Vm [m/s] (negative = headwind)
+  u_len: 120.0        # horizontal gust length dm [m]
+  w_amp:   0.0        # vertical gust amplitude Vm [m/s] (negative = downdraft)
+  w_len: 120.0        # vertical gust length dm [m]
+
+# --- Surface waves (linear Airy field, JONSWAP/Bretschneider spectrum; see
+# water_waves.hpp). PLANT truth only: touchdown happens at h = eta, the
+# altimeter measures clearance over the instantaneous surface, and the console
+# reports the wave-slope-referenced TN 1516 slam load -- but the nominal and
+# the CBF-QP keep the flat-water model (wave-blind filter). gamma = 1 is the
+# Bretschneider open-ocean spectrum of NATO STANAG 4194 (Annex D sea states);
+# gamma ~ 3.3 is the fetch-limited JONSWAP (lake) sea, with (Hs, Tp) from the
+# USACE CEM growth laws. regular: true collapses to one deterministic
+# component (Hs = crest-to-trough height).
+waves:
+  enabled: true
+  regular: false
+  Hs: 0.22            # significant wave height [m]
+  Tp: 1.8             # peak (modal) period [s]
+  gamma: 3.3          # JONSWAP peak enhancement; 1 = Bretschneider (STANAG 4194)
+  n: 128              # spectral components
+  seed: 1             # locked sea (phases/frequencies) for reproducibility
+  direction: head     # head | following (relative to the flight direction +x)
+  phase_deg: 0.0      # regular wave: phase at (x, t) = (0, 0)
+  contact_len: 0.4    # hull wetted length [m]: touchdown slope = mean tilt
+                      # across it (a keel bridges sub-hull-length ripples)
+
+# --- Nominal controller -------------------------------------------------------
+nominal:
+  T_set: 2.0           # [N] powered approach: carry thrust so there's airspeed
+                      # energy to flare (retuned for real mass 3.61 kg / T_static 50 N)
+  Kp_T:  4.0          # thrust PD: Tddot = Kp_T (T_set - T) - Kd_T Tdot
+  Kd_T:  4.0
+  Kp_gamma: 2.0       # gamma -> theta_cmd (PI)
+  Ki_gamma: 0.5
+  theta_cmd_max_deg: 25.0
+  Kp_theta: 1.0       # theta -> delta_e (PD); scaled ~/8 from 6.0 for the real
+  Kq:       0.25      # 
+
+# --- CBF safety filter --------------------------------------------------------
+cbf:
+  enabled:        true
+  thrust_limits:  true   # min/max-thrust actuator / HOCBF-validity guards (HARD)
+  impact:         true   # hydrodynamic impact-load barrier (NACA TN 1516)
+  stall:          true   # AoA upper bound (stall guard)
+  noseup:         true   # attitude lower bound, gated to the final metres
+  energy:         true   # total-specific-energy ceiling
+  impact_hard:    true   # impact is the only HARD safety-envelope barrier
+  stall_hard:     false  # stall / nose-up / energy are SOFT (slacked)
+  noseup_hard:    false
+  energy_hard:    false
+
+  # --- Stall / nose-up / total-energy barriers -------------------------------
+  # AoA stall guard: alpha_lim = alpha_stall - stall_margin (= 9 deg). Active the
+  # whole flight; drives the elevator nose-down as alpha -> alpha_lim (the pilot
+  # stall recovery). alpha_stall is the NACA 4414 wing-stall AoA.
+  alpha_stall_deg:  11.0
+  stall_margin_deg:  2.0
+  # Nose-up attitude floor [deg], active only below h_noseup [m]. Keeps theta above
+  # tau_keel_deg so the impact model stays valid and the touchdown is nose-up.
+  theta_min_deg:     3.0
+  h_noseup:          3.0
+  # Total-specific-energy ceiling E <= E_cap(h) = 1/2 V_td_max^2 + g_eff h, i.e. a
+  # descending airspeed cap V <= sqrt(V_td_max^2 + 2(g_eff-g)h). LOOSE never-exceed
+  # ceiling: V_td_max is the hull/structural touchdown limit (~1.4 V_stall), g_eff
+  # is sized so the cap sits above the whole approach (starts satisfied at h0).
+  V_td_max:         14.0
+  g_eff:            16.0
+  Tmax:   50.0         # max thrust [N] (T_static)
+
+  # --- Impact-load barrier (NACA TN 1516; degree-2 HOCBF, elevator-enforced) ---
+  # Bounds the peak CG load factor at water touchdown: b = (n_limit - n_peak) +
+  # Phi(z), Phi = Nb(1 - exp(-z/zs)). Soft + enabled by default and sized to be
+  # protective but NON-BINDING on this nominal approach (additive safety, no
+  # trajectory change) -- like the upper airspeed barrier. n_limit / beta_deg /
+  # Nb / zs are PLACEHOLDERS to calibrate (see TODO.md). NOTE: n_limit is a LOAD
+  # FACTOR and beta/rho_water are HYDRODYNAMIC -- unrelated to the aero CL_max.
+  n_limit:  3.0        # structural CG load-factor limit [g] (normal to water, w/ knockdowns)
+  beta_deg: 22.5       # hull dead-rise angle [deg] (NACA TN 1516 validated 22.5-40)
+  rho_water: 1000.0    # water density [kg/m^3] (1000 fresh / 1025 sea)
+  Nb:       10.0       # Phi(z) budget [g]: worst counterfactual excess load tolerated aloft
+  zs:       2.0        # Phi(z) altitude scale [m]: height over which flare authority acts
+  tau_keel_deg: 0.0    # keel incidence (tau = theta - tau_keel) [deg]
+  z_gate:   10.0       # assemble the impact row only below this height [m] (efficiency)
+  eps_g0:   0.02       # smooth floor on sin(gamma0): caps the planing singularity gamma0->0
+
+  # Class-K gains (linear alpha_i(s) = c_i s). Stall/nose-up are degree 2, energy 3.
+  c_stall:      [4.0, 4.0]         # stiffer than c_impact so it reacts before the limit
+  c_noseup:     [2.0, 2.0]         # gentle nudge (gated near the surface)
+  c_energy:     [2.0, 2.0, 2.0]    # gentle corridor
+  c_thrust_min: [6.0, 6.0]
+  c_thrust_max: [6.0, 6.0]
+  c_impact:     [2.0, 2.0]         # impact-load barrier class-K gains (degree 2)
+
+  # QP objective: J = 1/2||u - u_nom||^2 + sum_i 1/2 w_slack_i delta_i^2. Control
+  # cost is identity (regularizer only); each SOFT barrier's slack is penalized
+  # quadratically -- larger weight => firmer constraint. Priority via the weights:
+  # impact (HARD) > stall (1e5) > energy (1e4) > nose-up (1e3), so nose-up yields to
+  # the stall guard on the shared elevator. w_slack_impact is inactive (impact_hard).
+  w_slack_stall:  100000.0
+  w_slack_energy:  10000.0
+  w_slack_noseup:   1000.0
+  w_slack_impact:  10000.0
+
+  de_min_deg: -28.6
+  de_max_deg:  28.6
+  Tddot_min: -500.0
+  Tddot_max:  500.0
+
+  # Altitude-sensor noise [m]: the CBF acts on a noisy measurement h + N(0,sigma^2),
+  # while the plant integrates the true altitude. 0 => perfect altitude. 1.0 models
+  # a noisy AGL sensor (+-1 m, 1-sigma).
+  h_meas_stddev: 0.5
+  # First-order low-pass time constant [s] on that measurement before the CBF sees
+  # it. Attenuates the noise that drives near-surface elevator chatter, at the cost
+  # of ~tau lag. 0 => no filtering. tau=0.15 s ~ 1.1 Hz cutoff (best single-seed
+  # touchdown here; tune via Monte Carlo over seeds, the response is seed-sensitive).
+  h_lpf_tau: 0.15
