@@ -77,8 +77,34 @@ python3 scripts/plot_wave_landing.py results/lon_waves_lake.csv figures/lon_land
 `lon_autoland_sim [stab] [aircraft.yaml] [lon_scenario.yaml] [out.csv]` — all optional
 (defaults to the bundled `data/` files).
 
+## Run the 6-DOF straight-in landing sim
+
+`sixdof_autoland_sim` closes the **full nonlinear body-axis 6-DOF EOM** (`Dynamics::xdot`)
+with a cascaded-PID nominal (successive loop closure, Beard & McLain 2012): airspeed → throttle,
+γ → θ → elevator (with a speed → path reference shift — a one-line TECS — that keeps the speed
+axis stable whenever the throttle rails at idle), cross-track → bank → aileron, yaw damper. No CBF filter and no flare/decrab yet — a straight-in
+approach to touchdown at `h = eta(x, t)`, crabbing into any crosswind. Wind (now with a lateral
+gust axis) and waves are the same plant-side models as the lon sim, each toggled by one
+`enabled:` line in the scenario:
+
+```bash
+./build/sixdof_autoland_sim                                   # calm (data/sixdof_scenario.yaml)
+./build/sixdof_autoland_sim data/AHAB_combined_betasym.stab data/aircraft.yaml \
+    data/sixdof_crosswind.yaml runs/xwind.csv                 # steady 3 m/s crosswind
+./build/sixdof_autoland_sim data/AHAB_combined_betasym.stab data/aircraft.yaml \
+    data/sixdof_landing_waves_lake.yaml runs/waves.csv        # JONSWAP lake sea
+
+python3 scripts/plot_sixdof_results.py runs/xwind.csv figures/sixdof_xwind.png
+```
+
+The default deck is `AHAB_combined_betasym.stab` — the full ±20° sideslip grid, so crosswind
+sideslip never leaves the table. The wind-aware EOM keeps the state velocities inertial and
+feeds the aerodynamics the air-relative velocity, so wind-off runs are bit-identical to the
+original `xdot(x, u)`.
+
 > A separate legacy body-axis sim (`autoland_sim`, `src/sim.cpp`) exists as an older
-> design sandbox and is **not** part of the CBF workflow.
+> design sandbox (linear plant, no wind/waves) and is **not** part of the CBF or 6-DOF
+> workflows.
 
 ## Architecture
 
@@ -92,6 +118,8 @@ controller   cascaded PID, frontside technique (+ flare, decrab)
 cbf          CBF safety-filter interface; pass-through stub (OSQP later)
 sim          load -> trim -> linearize -> closed loop to touchdown -> CSV
 config       aircraft.yaml / scenario.yaml loaders
+sixdof_sim   6-DOF closed loop on the NONLINEAR EOM: trim -> cascaded-PID
+             nominal (sixdof_nominal) -> RK4 with wind/waves -> touchdown
 ```
 
 The trim solver and the linear model **both derive from `Dynamics::xdot`** — the

@@ -57,14 +57,21 @@ CoefVec Dynamics::aeroCoeffs(const StateVec& x, const CtrlVec& u) const {
   // -------------------------------------------------------------------------
   // FRAME TRANSFORM: file (X-fwd, Y-right, Z-UP) -> standard flight-dynamics
   // body axes (X-fwd, Y-right, Z-DOWN). The .stab reports CFz positive-UP
-  // (CFz ~= +CL in the data). The per-coefficient sign vector below is fixed by
-  // six independent physical stability constraints (Cm_alpha<0, lift up,
-  // Cl_beta<0, Cn_beta>0, Cy_beta<0, Cn_r<0); see linear_model.hpp.
-  //   [CFx, CFy, CFz, Cl=CMx, Cm=CMy, Cn=CMz] -> [+1,+1,-1,-1,+1,-1]
+  // (CFz ~= +CL in the data). Five of the six signs are fixed by independent
+  // physical stability constraints (Cm_alpha<0, lift up, Cl_beta<0, Cn_beta>0,
+  // Cy_beta<0, Cn_r<0); see linear_model.hpp. NONE of those constrain CFx --
+  // its sign is fixed by the drag polar instead: the file reports CFx
+  // positive-AFT (drag-positive, CD = CFx cos a + CFz sin a per the VSPAERO
+  // wind-axis transform used and verified in lon_augmented.hpp), so standard
+  // forward-positive CFx needs -1. With +1 the deck produced NEGATIVE drag
+  // around the approach alphas (net suction "thrust" canceling parasite_CD0)
+  // and a wildly over-curved polar above -- unnoticed for a while because
+  // near-zero drag only made trim thrust ~ 0.
+  //   [CFx, CFy, CFz, Cl=CMx, Cm=CMy, Cn=CMz] -> [-1,+1,-1,-1,+1,-1]
   // The yaw-rate variable flip was already applied to its term above.
   // -------------------------------------------------------------------------
   static const CoefVec kFrameSign =
-      (CoefVec() << 1.0, 1.0, -1.0, -1.0, 1.0, -1.0).finished();
+      (CoefVec() << -1.0, 1.0, -1.0, -1.0, 1.0, -1.0).finished();
   C = C.cwiseProduct(kFrameSign);
 
   // Parasite drag (viscous + hull) absent from the inviscid .stab: a constant
@@ -76,16 +83,44 @@ CoefVec Dynamics::aeroCoeffs(const StateVec& x, const CtrlVec& u) const {
 }
 
 StateVec Dynamics::xdot(const StateVec& x, const CtrlVec& u) const {
+  return xdot(x, u, Eigen::Vector3d::Zero());
+}
+
+StateVec Dynamics::xdot(const StateVec& x, const CtrlVec& u,
+                        const Eigen::Vector3d& W_earth) const {
   const double ub = x[U], vb = x[V], wb = x[W];
   const double p = x[P], q = x[Q], r = x[R];
   const double phi = x[PHI], theta = x[THETA], psi = x[PSI];
 
+  // Wind in body axes: W_b = R_nb^T * W_ned with W_ned = (W_x, W_y, -W_h)
+  // (earth frame here is x north, y east, h UP; NED z is -h). The rows of
+  // R_nb below match the hdot/ydot kinematics at the bottom of this function.
+  const double ctw = std::cos(theta), stw = std::sin(theta);
+  const double cpw = std::cos(phi), spw = std::sin(phi);
+  const double cyw = std::cos(psi), syw = std::sin(psi);
+  const double Wn = W_earth[0], We = W_earth[1], Wd = -W_earth[2];
+  const double Wbx = ctw * cyw * Wn + ctw * syw * We - stw * Wd;
+  const double Wby = (spw * stw * cyw - cpw * syw) * Wn +
+                     (spw * stw * syw + cpw * cyw) * We + spw * ctw * Wd;
+  const double Wbz = (cpw * stw * cyw + spw * syw) * Wn +
+                     (cpw * stw * syw - spw * cyw) * We + cpw * ctw * Wd;
+
+  // Air-relative state for the aerodynamics/thrust: only u,v,w differ (the
+  // body rates and attitude are shared), so aeroCoeffs sees the true
+  // aerodynamic Vt/alpha/beta. W_earth = 0 leaves x_air == x bit-identically.
+  StateVec x_air = x;
+  x_air[U] = ub - Wbx;
+  x_air[V] = vb - Wby;
+  x_air[W] = wb - Wbz;
+
   // 'Vt' (airspeed) -- do NOT name this 'V'; see aeroCoeffs note above.
-  const double Vt = std::max(1e-3, std::sqrt(ub * ub + vb * vb + wb * wb));
+  const double Vt = std::max(
+      1e-3, std::sqrt(x_air[U] * x_air[U] + x_air[V] * x_air[V] +
+                      x_air[W] * x_air[W]));
   const double qbar = 0.5 * cfg_.env.rho * Vt * Vt;
   const double S = table_.Sref(), b = table_.Bref(), c = table_.Cref();
 
-  const CoefVec C = aeroCoeffs(x, u);
+  const CoefVec C = aeroCoeffs(x_air, u);
 
   // Body-axis aerodynamic forces and moments (about the .stab moment reference).
   double Fx = qbar * S * C[CFX];

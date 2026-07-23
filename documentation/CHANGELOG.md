@@ -39,6 +39,51 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-07-22 — Brian — 6-DOF straight-in landing sim (nonlinear plant + cascaded-PID nominal)
+**Branch/commit:** 6dof
+**What changed:** New 6-DOF closed-loop water-landing sim (`sixdof_autoland_sim`), replacing the
+legacy linear-plant `autoland_sim` path as the 6-DOF workflow. The plant is the existing nonlinear
+body-axis EOM extended with an exact wind-aware overload `Dynamics::xdot(x, u, W_earth)`: the
+state velocities keep their inertial meaning and the wind enters only through the aero/thrust
+(air-relative velocity), so zero wind is bit-identical to the old path and no `Wdot` forcing is
+needed. The MIL-F-8785C gust model gained a lateral `v` axis (`v_amp`/`v_len`, + = toward +y east;
+step limit = steady crosswind); the Airy/JONSWAP wave field is consumed unchanged (touchdown at
+`h = eta(x, t)`, TN 1516 flat- vs wave-referenced slam-load truth in the touchdown record). The
+nominal is a cascaded-PID successive-loop-closure design (Beard & McLain 2012): airspeed→throttle
+PI, gamma→theta→elevator cascade (pitch inner is PID — `Ki_theta` closes the DC gap of the fixed
+`de_trim` feedforward), a `Kv_gamma` speed→path reference shift (one-line TECS; see below), 
+cross-track→bank→aileron, yaw damper. No CBF filter and no flare/decrab yet — straight-in only;
+the aircraft crabs into crosswind (~9.5 deg at 3 m/s) and holds centerline within ~0.4 m.
+**Bug found & fixed on the way: the body-axis EOM's CFx frame sign was inverted.** `kFrameSign`
+in `dynamics.cpp` carried `+1` for CFx — the ONE coefficient the six physical sign constraints
+(Cm_alpha<0, lift up, Cl_beta<0, Cn_beta>0, Cy_beta<0, Cn_r<0) never pin — so the deck's axial
+force entered the standard axes backwards: NEGATIVE total drag (~−0.03 net "suction thrust"
+canceling `parasite_CD0` exactly around approach alphas) and an absurdly over-curved polar above
+(implied Oswald e ≈ 0.15). It hid because near-zero drag only made trim thrust ≈ 0. Diagnosed by
+comparing both sign conventions against the raw deck: flipped, the polar is textbook (min CD_deck
+≈ 0.016 near zero lift) and matches the lon path's VSPAERO wind-axis transform (which was always
+correct — the lon/CBF results are untouched). Fix: CFx → −1 in `kFrameSign`; total CD is now
+~0.045–0.07 across the envelope, idle glide ≈ −6°, and the −3° approach is properly powered.
+The bug surfaced as a speed runaway: a hot entry (+2 m/s) accelerated to a ~29 m/s touchdown
+because there was no drag path back to V_ref and any speed term inside theta_cmd is exactly
+canceled by the gamma integrator at steady state. `Kv_gamma` (the gamma-REFERENCE shift, giving
+Vdot ≈ −g·Kv_gamma·(V−V_ref) independent of drag slope) is kept as idle-rail robustness, plus a
+hot-entry regression test.
+**Why:** The CBF work to date is longitudinal-only; a working 6-DOF dynamic simulation against the
+same wind/wave models is the base for lateral-directional landing work (crabbed/wing-down
+touchdowns are called out in TODO as entirely outside the lon barriers).
+**Follow-ups / notes for collaborator:** Wind and waves each toggle with one `enabled:` line in
+the scenario YAML. Roll gains are ceiling-limited by dt=0.01 (roll authority ~460 rad/s² per rad
+of aileron → `Kp_p ≥ ~0.4` limit-cycles); pitch gains stay Iyy-scaled per the lon tuning. The
+cross-track loop is PD-only, so a small steady y-offset (~0.4 m, from the deck's tiny lateral
+asymmetry at beta=0) remains — add `Ki_y` if it matters. Demo scenarios:
+`data/sixdof_scenario.yaml` (calm), `data/sixdof_crosswind.yaml`, and
+`data/sixdof_landing_waves_lake.yaml`; plot with `scripts/plot_sixdof_results.py`. Default deck
+is `AHAB_combined_betasym.stab` (full ±20° beta grid — the plain combined deck clamps at beta<0).
+**Files touched:** `include/autoland/{dynamics,wind_gust,sixdof_nominal,sixdof_sim}.hpp`,
+`src/{dynamics,sixdof_sim}.cpp`, `apps/sixdof_autoland_sim.cpp`, `data/sixdof_*.yaml`,
+`scripts/plot_sixdof_results.py`, `test/test_sixdof_sim.cpp`, `CMakeLists.txt`, `README.md`.
+
 ## 2026-07-18 — Brian — Surface-wave model (STANAG 4194 / JONSWAP), plant-side truth
 **Branch/commit:** stall-recovery-suite
 **What changed:** Linear Airy surface-wave field (`include/autoland/water_waves.hpp`, header-only,
