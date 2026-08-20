@@ -178,6 +178,19 @@ polynomial/linear in the state, so they are exact regardless.)
   (≈ 0.03 m/s at V ≈ 11, θ ≈ +7.3°) with the stall guard protective (α peaks ~7.4°). Only when a
   **sub-stall** touchdown speed is demanded (`V_td_max = 9 < V_stall ≈ 9.7`) does the guard bind at
   9° and take a hard nose-down landing (~2.7 m/s) rather than stall — the honest recovery tradeoff.
+- **Beaver plant — single-integrator power → degree-2 mixed-actuator impact barrier.** For the
+  flight-validated DHC-2 Beaver plant (`paper_readiness.md` §6), propulsion enters aerodynamically
+  through the slipstream coefficient `dpt` (no separate thrust force). Making engine **power a
+  single-integrator state** (control = power rate `u_P`, vs. the AHAB two-integrator thrust chain)
+  puts power on the impact barrier at **relative degree 2 via the force channel** (`dpt → V̇/γ̇ →
+  sink`), *uniform* with the elevator's degree-2 moment channel — so the hard impact row is enforced
+  by **both** actuators. Payoff: it survives elevator-authority collapse at the low-q touchdown
+  (power authority scales `~1/V`, growing as the elevator's `~ρV²` fades), improves QP feasibility,
+  and realizes the long-wanted *thrust-jointly-enforces-impact* construction with the standard HOCBF
+  (no non-affine `u²/u̇` terms). Cost: power is `C⁰` (rate-limited) — bound `u_P` to the real engine
+  spool rate, since the hard row now leans on power authority. Full derivation:
+  `water_landing_cbf_math.md` §5. Implemented + tested: `include/autoland/beaver_lon.hpp`,
+  `test/test_beaver_lon.cpp` (parallel to the AHAB path; not yet the default plant).
 
 ## 7. Vehicle & scenario data (current)
 

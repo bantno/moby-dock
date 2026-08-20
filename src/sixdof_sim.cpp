@@ -177,6 +177,8 @@ SixDofSim::SixDofSim(const std::string& stab_path,
   sc_.hull.rho_water = getOr(yh, "rho_water", sc_.hull.rho_water);
   sc_.hull.tau_keel = getOr(yh, "tau_keel_deg", sc_.hull.tau_keel / kDeg) * kDeg;
   sc_.hull.eps_g0 = getOr(yh, "eps_g0", sc_.hull.eps_g0);
+  sc_.hull.n_surfaces = static_cast<int>(
+      getOr(yh, "n_surfaces", static_cast<double>(sc_.hull.n_surfaces)));
 
   // --- Initial condition: approach trim + scenario offsets. ---
   YAML::Node yi = root["initial"];
@@ -276,11 +278,12 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
       const double alpha_s = std::atan(eta_x);
       td.n_peak_flat = impactNPeakExact(
           m, g, sc_.hull.beta, sc_.hull.rho_water, sc_.hull.eps_g0,
-          x[THETA] - sc_.hull.tau_keel, -gamma, std::max(0.0, sink));
+          x[THETA] - sc_.hull.tau_keel, -gamma, std::max(0.0, sink),
+          sc_.hull.n_surfaces);
       td.n_peak_wave = impactNPeakExact(
           m, g, sc_.hull.beta, sc_.hull.rho_water, sc_.hull.eps_g0,
           x[THETA] - alpha_s - sc_.hull.tau_keel, alpha_s - gamma,
-          std::max(0.0, td.sink_rel));
+          std::max(0.0, td.sink_rel), sc_.hull.n_surfaces);
       break;
     }
 

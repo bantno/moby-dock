@@ -28,6 +28,7 @@ struct HullParams {
   double rho_water{1000.0};          // [kg/m^3]
   double tau_keel{0.0};              // keel incidence: tau = theta - tau_keel
   double eps_g0{0.02};               // smooth floor on sin(gamma0)
+  int n_surfaces{1};                 // planing surfaces: 1 hull / 2 floats -> W/n
 };
 
 // Scenario bundle. Nominal feedforwards default to the trim solve at

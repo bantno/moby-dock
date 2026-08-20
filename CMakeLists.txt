@@ -160,6 +160,8 @@ add_executable(unit_tests
   test/test_water_waves.cpp
   test/test_stall_recovery.cpp
   test/test_sixdof_sim.cpp
+  test/test_beaver_aero.cpp
+  test/test_beaver_lon.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)

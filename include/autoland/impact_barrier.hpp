@@ -17,6 +17,14 @@
 // the load-factor coefficient Clf(kappa) (eqs 25/27, precomputed in
 // impact_clf_table.hpp), and the hull coefficient K0 = (alpha_hull/(W g^2))^{1/3}.
 //
+// MULTI-FLOAT (n_surfaces): TN 1516 is a SINGLE planing surface carrying the full
+// weight (float OR hull). For a twin-float airframe the load is shared, so each
+// float takes W/n_surfaces; we evaluate the single-surface theory per float with
+// W = mass*g/n_surfaces. Since n_peak ~ (W)^{-1/3}, n_surfaces=2 raises the CG load
+// factor by 2^{1/3} ~ 1.26x over full weight on one surface -- the conservative
+// (safe) direction for symmetric contact. n_surfaces=1 (default) = single hull.
+// See documentation/impact_load_barrier_spec.md sections 7-8.
+//
 // Relative degree 2 via the elevator (theta->q->de); thrust (T->Tdot->Tddot, deg
 // 3) drops out of the degree-2 HOCBF row, so the flare enforces it. Thrust still
 // bounds impact load through the descent/sink-rate barrier (spec section 4).
@@ -93,13 +101,15 @@ inline ImpactK0Local impactK0(double mass, double g, double beta,
 // table range, tau via impactK0.
 inline double impactNPeakExact(double mass, double g, double beta,
                                double rho_water, double eps_g0, double tau,
-                               double gamma0, double ydot0) {
+                               double gamma0, double ydot0, int n_surfaces = 1) {
   const double sg0 =
       std::sqrt(std::sin(gamma0) * std::sin(gamma0) + eps_g0 * eps_g0);
   double kappa = std::sin(tau) * std::cos(tau + gamma0) / sg0;
   kappa = std::min(10.0, std::max(0.2, kappa));
   const double Clf = clfLookup(kappa).value;
-  return impactK0(mass, g, beta, rho_water, tau).K0 * Clf * ydot0 * ydot0;
+  // W/n_surfaces per float (single-surface theory applied per planing surface).
+  return impactK0(mass / n_surfaces, g, beta, rho_water, tau).K0 * Clf * ydot0 *
+         ydot0;
 }
 
 struct ImpactLoadBarrier {
@@ -141,7 +151,8 @@ inline ImpactLoadBarrier makeImpactLoadBarrier(const AeroLocal& a, double n_limi
                                                double beta, double rho_water,
                                                double Nb, double zs,
                                                double tau_keel, double eps_g0,
-                                               const LonStateVec& X) {
+                                               const LonStateVec& X,
+                                               int n_surfaces = 1) {
   ImpactLoadBarrier b;
   b.n_limit = n_limit;
   b.Nb = Nb;
@@ -163,8 +174,9 @@ inline ImpactLoadBarrier makeImpactLoadBarrier(const AeroLocal& a, double n_limi
   b.dClf_dk = c.slope;
 
   // Hull coefficient K0 at the clamped anchor (impactK0: eqs 12a/45/49 with
-  // the tau clamps).
-  const ImpactK0Local kl = impactK0(a.mass, a.g, beta, rho_water, tau0_raw);
+  // the tau clamps). Effective weight is W/n_surfaces (W/2 per float).
+  const ImpactK0Local kl =
+      impactK0(a.mass / n_surfaces, a.g, beta, rho_water, tau0_raw);
   const double tau0 = kl.tau0;
   const double phi_A = kl.phi_A;
   b.K00 = kl.K0;
