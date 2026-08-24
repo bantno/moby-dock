@@ -290,6 +290,15 @@ penalty schedule as the backstop.
 
 ## 7. Caveats
 
+- **Single planing surface (float _or_ hull), full weight — scope, verified against
+  TN 1516.** The paper puts the *entire* seaplane weight on one keeled V-bottom ("a
+  keeled float or hull") and says nothing about twin floats, load sharing, or
+  lateral/asymmetric contact. This barrier inherits that single-surface, full-weight
+  scope. On a twin-float airframe (the DHC-2 Beaver plant; see `paper_readiness.md`
+  §6) it is used as a **representative, physically-grounded terminal constraint**, not
+  a validated floatplane load prediction — a faithful twin-float model (per-float W/N
+  split, inter-float interference, one-float-first asymmetry) is new, unvalidated
+  modeling and is deliberately out of scope.
 - The bound is conservative because chine immersion is ignored. The true peak is at
   or below the prediction.
 - Set `n_limit` from the structural allowable with knockdowns. The prediction is CG
@@ -303,7 +312,39 @@ penalty schedule as the backstop.
 
 ---
 
-## 8. Equation reference
+## 8. Vehicle & float parameters (DHC-2 Beaver on Wipline 6000 floats)
+
+The plant is the flight-validated DHC-2 Beaver (see `paper_readiness.md` §6), which flies on
+**twin Wipline 6000 floats**. The impact barrier therefore uses the **W/2-per-float** conservative
+parameterization: `n_surfaces = 2`, effective weight per surface `W/2`. Because
+`n_peak ∝ (W/n)^(−1/3)`, the two-float split raises the predicted CG load factor by
+2^(1/3) ≈ 1.26× over a single surface at full weight — the conservative (safe) direction for
+symmetric contact (§7 covers the single-surface scope this rides on). `n_surfaces = 1` (default)
+recovers the single-hull (flying-boat / AHAB) behavior unchanged.
+
+| Parameter | Knob | Value | Basis |
+|---|---|---|---|
+| Planing surfaces | `n_surfaces` | **2** | twin float |
+| Aircraft mass | `mass` | 2313 kg (5100 lb std gross) | Beaver spec |
+| Effective weight / float | W/2 | ~11.3 kN | mass·g / n_surfaces |
+| Dead-rise (forebody) | `beta_deg` | **22.5°** | representative; float 15–40°, ≥20° practical, NACA Model 57 family 20–25° |
+| Water density | `rho_water` | 1000 fresh / 1025 sea | standard |
+| Keel incidence | `tau_keel_deg` | 0 (confirm ~0–3° float rigging) | representative |
+| Float length | — | 7.49 m | Wipline 6000 (context; not in peak-load formula) |
+| Float beam/width | — | 0.99 m | Wipline 6000 (context; chine-immersion / local-load check) |
+| Buoyancy / float (fresh) | — | 5664 lb | Wipline 6000 (sanity: ~2× reserve vs gross) |
+
+**Documented** (Wipaire spec/service manuals): float length, beam, buoyancy, gross weight.
+**Representative** (float makers do not publish these): dead-rise and keel incidence — acceptable
+because the barrier is a *representative* constraint (§7) and dead-rise is the only parameter that
+moves the peak load. Conservatism note: `n_peak ∝ W^(−1/3)`, so a *lower* assumed weight is the
+conservative direction; the standard 5100 lb gross is used (a heavier STC gross would predict a
+slightly lower load). Sources: Wipaire DHC-2 Beaver float data; Gudmundsson *GA Aircraft Design*
+App. C3; USNA float-design notes.
+
+---
+
+## 9. Equation reference
 
 | Quantity | Expression | Paper eq |
 |---|---|---|

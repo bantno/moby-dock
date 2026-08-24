@@ -98,8 +98,8 @@ TEST_CASE("Wind-perturbed RHS adds the exact path-axis gust terms", "[wind_gust]
   LonCtrlVec U;
   U << 0.02, 0.0;
 
-  const GustWind W{2.0, -0.8};       // steady part [m/s]
-  const GustWind Wdot{0.5, -0.2};    // ramp forcing [m/s^2]
+  const GustWind W{2.0, 0.0, -0.8};     // steady part [m/s] (u, v, w)
+  const GustWind Wdot{0.5, 0.0, -0.2};  // ramp forcing [m/s^2]
   const LonStateVec base = lonXdotFull(table, mx, cfg, X, U);
   const LonStateVec wind = lonXdotFullWind(table, mx, cfg, X, U, W, Wdot);
 
@@ -120,8 +120,8 @@ TEST_CASE("Wind-perturbed RHS adds the exact path-axis gust terms", "[wind_gust]
 
   // Physical sign sanity on the ramp: a tailwind ramp bleeds airspeed, an
   // updraft ramp (Wdot.w > 0) drops gamma_air, i.e. raises alpha = theta-gamma.
-  const LonStateVec tail = lonXdotFullWind(table, mx, cfg, X, U, GustWind{}, GustWind{1.0, 0.0});
+  const LonStateVec tail = lonXdotFullWind(table, mx, cfg, X, U, GustWind{}, GustWind{1.0, 0.0, 0.0});
   CHECK(tail[LV] < base[LV]);
-  const LonStateVec updraft = lonXdotFullWind(table, mx, cfg, X, U, GustWind{}, GustWind{0.0, 1.0});
+  const LonStateVec updraft = lonXdotFullWind(table, mx, cfg, X, U, GustWind{}, GustWind{0.0, 0.0, 1.0});
   CHECK(updraft[LGAM] < base[LGAM]);
 }

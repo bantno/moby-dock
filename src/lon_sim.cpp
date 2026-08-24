@@ -208,6 +208,7 @@ LonSim::LonSim(const std::string& stab_path, const std::string& aircraft_yaml,
   cb.Nb = getOr(yc, "Nb", 10.0);
   cb.zs = getOr(yc, "zs", 2.0);
   cb.tau_keel = getOr(yc, "tau_keel_deg", 0.0) * kDeg;
+  cb.n_surfaces = static_cast<int>(getOr(yc, "n_surfaces", 1.0));  // 1 hull / 2 floats
   cb.z_gate = getOr(yc, "z_gate", 10.0);
   cb.eps_g0 = getOr(yc, "eps_g0", 0.02);
   cb.c_stall = getArr2(yc, "c_stall", {4.0, 4.0});
@@ -478,7 +479,8 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
     // window (z < z_gate), where the row is actually assembled/enforced.
     const ImpactLoadBarrier bimp =
         makeImpactLoadBarrier(aero, sc_.cbf.n_limit, sc_.cbf.beta, sc_.cbf.rho_water,
-                              sc_.cbf.Nb, sc_.cbf.zs, sc_.cbf.tau_keel, sc_.cbf.eps_g0, X);
+                              sc_.cbf.Nb, sc_.cbf.zs, sc_.cbf.tau_keel, sc_.cbf.eps_g0, X,
+                              sc_.cbf.n_surfaces);
     const auto lii = barrierLie<2>(aero, bimp, X);
     const auto& ci = sc_.cbf.c_impact;
     const double psi1i = lii.Lf[1] + ci[0] * lii.Lf[0];
@@ -559,11 +561,12 @@ LonTouchdown LonSim::run(const std::string& csv_path) {
       const double alpha_s = std::atan(eta_x);
       td.n_peak_flat = impactNPeakExact(
           aero.mass, aero.g, sc_.cbf.beta, sc_.cbf.rho_water, sc_.cbf.eps_g0,
-          X[LTH] - sc_.cbf.tau_keel, -X[LGAM], std::max(0.0, sink));
+          X[LTH] - sc_.cbf.tau_keel, -X[LGAM], std::max(0.0, sink),
+          sc_.cbf.n_surfaces);
       td.n_peak_wave = impactNPeakExact(
           aero.mass, aero.g, sc_.cbf.beta, sc_.cbf.rho_water, sc_.cbf.eps_g0,
           X[LTH] - alpha_s - sc_.cbf.tau_keel, alpha_s - X[LGAM],
-          std::max(0.0, td.sink_rel));
+          std::max(0.0, td.sink_rel), sc_.cbf.n_surfaces);
       break;
     }
     if (sc_.wind.enabled) {

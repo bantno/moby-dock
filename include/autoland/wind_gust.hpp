@@ -57,17 +57,20 @@ struct GustAxis {
   }
 };
 
-// Block parameters (YAML `wind:` section of the lon scenario).
+// Block parameters (YAML `wind:` section of the lon scenario). The lateral
+// v axis exists for the 6-DOF sim (the longitudinal sims read only u/w); its
+// step-gust limit (len <= 0) doubles as a steady crosswind after t_start.
 struct DiscreteGustConfig {
   bool enabled{false};
   double t_start{0.0};  // gust onset time [s]
-  GustAxis u;           // horizontal axis, + = tailwind
-  GustAxis w;           // vertical axis,   + = updraft
+  GustAxis u;           // along-centerline axis, + = tailwind
+  GustAxis v;           // lateral axis,          + = wind toward +y (east)
+  GustAxis w;           // vertical axis,         + = updraft
 };
 
-// Earth-frame gust vector in the vertical plane (values [m/s] or rates [m/s^2]).
+// Earth-frame gust vector (values [m/s] or rates [m/s^2]).
 struct GustWind {
-  double u{0.0}, w{0.0};
+  double u{0.0}, v{0.0}, w{0.0};
 };
 
 // Penetration-distance dynamics: xdot = V once the gust has started. x itself
@@ -78,13 +81,13 @@ inline double gustXdot(const DiscreteGustConfig& g, double t, double V) {
 
 inline GustWind gustWind(const DiscreteGustConfig& g, double x) {
   if (!g.enabled) return {};
-  return {g.u.value(x), g.w.value(x)};
+  return {g.u.value(x), g.v.value(x), g.w.value(x)};
 }
 
 // Time derivative Wdot = (dW/dx) xdot, needed by the wind-axis EOM forcing.
 inline GustWind gustWindRate(const DiscreteGustConfig& g, double x, double xdot) {
   if (!g.enabled) return {};
-  return {g.u.slope(x) * xdot, g.w.slope(x) * xdot};
+  return {g.u.slope(x) * xdot, g.v.slope(x) * xdot, g.w.slope(x) * xdot};
 }
 
 }  // namespace autoland

@@ -228,3 +228,59 @@ where $\delta_i\ge0$ is the slack on soft row $i$ (quadratically penalized by $w
 6.  **Max Thrust (Degree 2, §3.4):** Enforced exclusively by $\ddot{T}$. Hard (actuator/validity guard).
 
 *Post-Processing:* The optimized $U^\star = [\delta_e^\star, \ddot{T}^\star]^T$ is returned. $\delta_e^\star$ is passed directly to the elevator servos. $\ddot{T}^\star$ is integrated twice onboard the flight computer to generate the final throttle setpoint passed to the PX4 control interface.
+
+---
+
+## 5. Beaver plant: single-integrator power and the degree-2 mixed-actuator impact barrier
+
+This section derives the propulsion architecture used with the flight-validated DHC-2 Beaver plant (LR-556; see `paper_readiness.md` §6). It is **implemented and tested** in `include/autoland/beaver_lon.hpp` + `test/test_beaver_lon.cpp`, parallel to the AHAB path.
+
+### 5.1 The change: power as a single-integrator state
+
+The Beaver has **no separate thrust force** — net thrust and slipstream enter the aerodynamics through the normalized propeller total-pressure rise $d_{pt}$, which appears in the force coefficients $C_X, C_Z$ (and the pitching moment $C_m$ via $C_{m,d_{pt}}$). We therefore make **engine power $P$ a state** with control the **power rate** $u_P = \dot P$ — a *single* integrator — replacing the AHAB thrust chain $[T,\dot T]$ / $\ddot T$ (two integrators):
+
+$$
+X = [\,h,\ V,\ \gamma,\ \theta,\ q,\ P\,]^T,\qquad U = [\,\delta_e,\ u_P\,]^T,\qquad \dot P = u_P,\qquad d_{pt}=0.08696+\tfrac{2\cdot191.18}{\rho}\,\frac{P}{V^3}.
+$$
+
+The elevator is routed through the pitch **moment only** ($C_{m,\delta_e}$); the Beaver's direct elevator-lift term $C_{Z,\delta_e}=-0.398$ is dropped from the drift/$g$, keeping $\delta_e$ cleanly relative degree 2 (the same modeling choice the AHAB path makes).
+
+### 5.2 Relative degree of the impact barrier to each actuator
+
+The impact barrier $b = \big(n_\text{lim}-n_\text{peak}(\tau,\gamma_0,\dot y_0)\big)+\Phi(z)$ depends on $(\theta,\gamma,V,h)$ but **not** on $q$ or $P$. Differentiating along $\dot X = f(X)+g(X)U$:
+
+$$
+\dot b = \frac{\partial b}{\partial h}\dot h+\frac{\partial b}{\partial V}\dot V+\frac{\partial b}{\partial \gamma}\dot\gamma+\frac{\partial b}{\partial\theta}\,q .
+$$
+
+No control appears yet ($\delta_e$ enters only $\dot q$; $u_P$ enters only $\dot P$), so relative degree $\ge 2$. At the second derivative:
+
+- **Elevator (moment channel):** $\dfrac{\partial b}{\partial\theta}\,\dot q$ with $\dot q = M/I_y$, $M\supset C_{m,\delta_e}\,\delta_e$ — so $\delta_e$ appears in $\ddot b$.
+- **Power (force channel):** $\dfrac{\partial b}{\partial V}\ddot V$ (and $\tfrac{\partial b}{\partial\gamma}\ddot\gamma$) with $\ddot V \supset \dfrac{\partial \dot V}{\partial P}\,\dot P = \dfrac{\partial \dot V}{\partial P}\,u_P$ — so $u_P$ appears in $\ddot b$.
+
+Both controls first appear at $\ddot b$: **uniform relative degree 2**. The control row therefore has **two** nonzero columns,
+
+$$
+L_gL_f\,b = \big[\,\underbrace{c_{\delta_e}}_{\text{moment}}\ \ \underbrace{c_{u_P}}_{\text{force}}\,\big],\qquad c_{\delta_e}\ne 0,\ c_{u_P}\ne 0,
+$$
+
+a **degree-2 mixed-actuator** row — vs. the AHAB double integrator, where thrust ($\ddot T$) enters the impact barrier only at degree $\ge 3$ (force channel) / $4$ (moment) and drops out of the degree-2 row. The power's degree-2 authority comes from the *force channel* (reducing sink rate); the $C_{m,d_{pt}}$ pitch coupling is a bonus that enriches the drift $L_f^2 b$ but reaches the control only at degree 3.
+
+*(Verified in `test_beaver_lon.cpp` with the exact flow-Taylor Lie jet: at degree 1 both columns are $0$; at degree 2 both are nonzero.)*
+
+### 5.3 Complementary authority vs. speed
+
+Scaling the two columns:
+
+$$
+c_{\delta_e} \propto C_{m,\delta_e}\,\bar q\,S\bar c/I_y \ \propto\ \rho V^2 \quad(\text{weak at low speed}),\qquad
+c_{u_P} \propto \frac{\partial \dot V}{\partial P}\ \propto\ \bar q\,\frac{\partial C_X}{\partial d_{pt}}\frac{\partial d_{pt}}{\partial P}\ \propto\ \rho V^2\cdot\frac{1}{\rho V^3}=\frac{1}{V}\quad(\text{strong at low speed}).
+$$
+
+The two actuators are **anti-correlated in speed**: exactly at the low-$\bar q$ flare/touchdown — where the elevator-only impact barrier is weakest (the "controllability guard" gap) — the power authority is strongest. *(Verified: the $|c_{u_P}|/|c_{\delta_e}|$ ratio is larger at 25 m/s than at 40 m/s.)*
+
+### 5.4 Why this helps, and the cost
+
+**Benefit.** The hard impact row is enforced by two independent control directions instead of one: it survives elevator-authority collapse near the water, improves QP feasibility (fewer best-effort recoveries), and — because both actuators are uniform degree 2 — realizes the *thrust-jointly-enforces-impact* construction (previously "highest research value") with the **standard** HOCBF, no non-affine $u^2/\dot u$ terms. The energy barrier likewise drops to degree 2. The system stays **control-affine** in $[\delta_e, u_P]$: $d_{pt}$'s nonlinearity in $(P,V)$ lives in the drift and is handled exactly by the frozen-affine + Taylor/autodiff Lie machinery.
+
+**Cost.** Power becomes $C^0$ (rate-limited, not $C^1$) — physically reasonable for engine spool-up, but $u_P$ must be **bounded to the real spool rate** or the barrier leans on power it cannot deliver instantly. Because the hard row now depends on power authority, the $d_{pt}(P,V)$ map and spool bound must reflect the real engine, not be optimistic.

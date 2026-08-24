@@ -1,0 +1,95 @@
+# =============================================================================
+# 6-DOF straight-in water-landing scenario (sixdof_autoland_sim).
+#
+# Full nonlinear body-axis plant (Dynamics::xdot) closed with the cascaded-PID
+# nominal (successive loop closure, Beard & McLain 2012): airspeed->throttle,
+# gamma->theta->elevator, cross-track->bank->aileron, yaw damper. No CBF
+# filter, no flare/decrab: the aircraft flies the glideslope into the water
+# and crabs into any crosswind.
+#
+# WIND and WAVES are independent plant-side disturbances, each toggled by its
+# own `enabled:` line below -- flip one boolean, nothing else. Both stay
+# unmeasured by the controller (still-air / flat-water nominal).
+#
+# Nominal feedforwards (theta_trim, de_trim, dT_trim) come from a trim solve
+# at (V_app, gamma_app_deg); fields under nominal: override the gains.
+# =============================================================================
+
+V_app: 18.0           # approach airspeed [m/s]
+gamma_app_deg: -3.0   # approach flight-path angle [deg] (negative = descent).
+                      # Powered approach: with the corrected deck drag the
+                      # idle glide is ~-6 deg, so anything shallower trims at
+                      # interior throttle and the airspeed loop has authority.
+
+dt:    0.01
+t_max: 200.0
+
+initial:
+  h0:        40.0     # start altitude [m]
+  dV:         0.0     # V0 = V_app + dV
+  dy:         0.0     # initial cross-track offset [m]
+  dpsi_deg:   0.0     # initial heading offset [deg]
+  dtheta_deg: 0.0     # initial pitch offset [deg]
+
+# --- Discrete wind gust (MIL-F-8785C "1-cosine"), PLANT disturbance only ----
+# Earth frame, h-up: u_amp > 0 = tailwind, v_amp > 0 = wind toward +y (east,
+# i.e. from the left when flying north), w_amp > 0 = updraft. Each axis is a
+# 1-cosine ramp over its length; len: 0 degenerates to a step gust, so a
+# steady crosswind after t_start is simply v_len: 0.
+wind:
+  enabled: false      # <- one-line toggle
+  t_start: 5.0        # gust onset [s]
+  u_amp:   0.0        # along-track amplitude [m/s] (e.g. -3.0 = headwind gust)
+  u_len: 120.0
+  v_amp:   0.0        # lateral amplitude [m/s] (e.g. 3.0 = crosswind from left)
+  v_len: 120.0
+  w_amp:   0.0        # vertical amplitude [m/s] (e.g. -2.0 = downdraft)
+  w_len: 120.0
+
+# --- Surface waves (linear Airy field, JONSWAP/Bretschneider spectrum) ------
+# PLANT truth only: touchdown happens at h = eta(x, t) and the console reports
+# the wave-referenced TN 1516 slam load. Disabled => flat water (h = 0).
+waves:
+  enabled: false      # <- one-line toggle
+  regular: false      # true = single deterministic component (Hs = height H)
+  Hs: 0.22            # significant wave height [m] (lake: U10 8 m/s, 3 km fetch)
+  Tp: 1.8             # peak period [s]
+  gamma: 3.3          # JONSWAP peak enhancement; 1 = Bretschneider (STANAG 4194)
+  n: 128              # spectral components
+  seed: 1             # locked sea for reproducibility
+  direction: head     # head | following (relative to flight direction +x)
+  phase_deg: 0.0      # regular wave: phase at (x, t) = (0, 0)
+  contact_len: 0.4    # hull wetted length [m] for the contact slope
+
+# --- Nominal controller gains ------------------------------------------------
+# Pitch inner gains are sized for the real Iyy = 0.052 (cf. lon_scenario.yaml);
+# roll gains for Ixx = 0.101.
+nominal:
+  Kp_V: 0.05          # airspeed PI -> throttle
+  Ki_V: 0.02
+  Kp_gamma: 2.0       # gamma -> theta_cmd (PI)
+  Ki_gamma: 0.5
+  Kv_gamma: 0.02      # speed->path energy trade [rad/(m/s)] (one-line TECS):
+                      # fast -> shallower gamma_ref so gravity stops feeding
+                      # the speed (tau ~ 1/(g*Kv)). Keeps the speed axis stable
+                      # whenever the throttle rails (idle on steep approaches),
+                      # where drag alone recovers V only slowly.
+  dgamma_V_max_deg: 4.0  # cap on the reference shift
+  theta_cmd_max_deg: 25.0
+  Kp_theta: 1.0       # theta -> delta_e (PID); Ki_theta closes the DC gap of
+  Ki_theta: 0.5       # the fixed de_trim feedforward as flight condition drifts
+  Kq: 0.25
+  Kp_y: 0.02          # cross-track -> phi_cmd (PD)
+  Kd_y: 0.05
+  phi_max_deg: 25.0
+  Kp_phi: 1.0         # phi -> delta_a (PD). Ceiling-limited by the dt=0.01
+  Kp_p: 0.15          # step: the roll-rate pole is ~460*Kp_p rad/s and
+                      # Kp_p >= ~0.4 limit-cycles (delta_a chatter)
+  Kr: 0.2             # yaw damper r -> delta_r
+
+# --- Hull contact diagnostics (TN 1516 slam-load truth at touchdown) ---------
+hull:
+  beta_deg: 22.5      # dead-rise angle [deg]
+  rho_water: 1000.0   # [kg/m^3] (1000 fresh / 1025 sea)
+  tau_keel_deg: 0.0   # keel incidence
+  eps_g0: 0.02        # smooth floor on sin(gamma0)

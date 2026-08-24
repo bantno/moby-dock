@@ -1,0 +1,32 @@
+# =============================================================================
+# 6-DOF lake-sea landing demo: the base straight-in scenario with the WAVES
+# toggle flipped on -- the fetch-limited JONSWAP lake sea of
+# lon_landing_waves_lake.yaml (U10 = 8 m/s over 3 km fetch => Hs 0.22 m,
+# Tp 1.8 s, gamma 3.3, head seas). Touchdown happens on the instantaneous
+# surface h = eta(x, t); the console reports the wave-referenced TN 1516
+# slam load the flat-water-blind controller never saw.
+# All controller gains keep their defaults (sixdof_nominal.hpp).
+# =============================================================================
+
+V_app: 18.0
+gamma_app_deg: -3.0
+
+dt:    0.01
+t_max: 200.0
+
+initial:
+  h0: 40.0
+
+wind:
+  enabled: false
+
+waves:
+  enabled: true
+  regular: false
+  Hs: 0.22          # lake: USACE CEM growth laws, U10 8 m/s / 3 km fetch
+  Tp: 1.8
+  gamma: 3.3        # fetch-limited JONSWAP
+  n: 128
+  seed: 1
+  direction: head
+  contact_len: 0.4

@@ -107,7 +107,8 @@ LonCtrlVec LonCBFFilter::filter(const LonCtrlVec& U_nom, const LonStateVec& X,
   if (cfg_.impact && X[LH] < cfg_.z_gate && -X[LGAM] > 0.0 && tau_gate > 0.0) {
     const ImpactLoadBarrier b =
         makeImpactLoadBarrier(aero, cfg_.n_limit, cfg_.beta, cfg_.rho_water,
-                              cfg_.Nb, cfg_.zs, cfg_.tau_keel, cfg_.eps_g0, X);
+                              cfg_.Nb, cfg_.zs, cfg_.tau_keel, cfg_.eps_g0, X,
+                              cfg_.n_surfaces);
     auto lie = barrierLie<2>(aero, b, X);  // relative degree 2 (elevator)
     std::vector<double> Lf(lie.Lf.begin(), lie.Lf.end());
     const std::vector<double> c(cfg_.c_impact.begin(), cfg_.c_impact.end());

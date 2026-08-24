@@ -32,10 +32,11 @@ cg_offset:
   dz: 0.0        # m
 
 # --- Extra parasite drag (viscous + hull) omitted by the inviscid .stab -------
-# The VSPAero panel solution carries almost no drag at low alpha (body-x CFx is
-# near zero / slightly positive). Real viscous + flying-boat hull drag is added
-# here as a body-x drag coefficient so a shallow descent needs positive thrust
-# and trim is well-posed. TODO: calibrate against flight / tow-tank data.
+# The inviscid VSPAero solution carries only induced-type drag (~0.015-0.02 at
+# approach alphas once the CFx frame sign is applied correctly; see
+# dynamics.cpp kFrameSign). Real viscous + flying-boat hull drag is added here
+# as a body-x drag coefficient so a shallow descent needs positive thrust and
+# trim is well-posed. TODO: calibrate against flight / tow-tank data.
 aero:
   parasite_CD0: 0.030
 

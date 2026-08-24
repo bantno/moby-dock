@@ -75,6 +75,10 @@ struct LonCBFConfig {
   double n_limit{3.0};        // structural CG load-factor limit [g] (normal to water)
   double beta{22.5 * M_PI / 180.0};  // hull dead-rise [rad]
   double rho_water{1000.0};   // water density [kg/m^3] (1000 fresh / 1025 sea)
+  int n_surfaces{1};          // planing surfaces sharing the load: 1 = single hull
+                              // (flying boat); 2 = twin float -> W/2 per float
+                              // (n_peak conservative by 2^(1/3); see
+                              // impact_load_barrier_spec.md sections 7-8)
   double Nb{10.0};            // Phi(z) budget [g]: counterfactual excess load tolerated
   double zs{2.0};             // Phi(z) altitude scale [m] (flare-authority height)
   double tau_keel{0.0};       // keel incidence: tau = theta - tau_keel [rad]

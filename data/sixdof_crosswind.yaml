@@ -1,0 +1,25 @@
+# =============================================================================
+# 6-DOF crosswind landing demo: the base straight-in scenario with the WIND
+# toggle flipped on -- a steady 3 m/s crosswind from the left (step "gust",
+# v_len: 0) starting at t = 5 s. The controller is wind-blind: it holds the
+# centerline with bank while the nose crabs into the wind (no decrab yet).
+# All controller gains keep their defaults (sixdof_nominal.hpp).
+# =============================================================================
+
+V_app: 18.0
+gamma_app_deg: -3.0
+
+dt:    0.01
+t_max: 200.0
+
+initial:
+  h0: 40.0
+
+wind:
+  enabled: true
+  t_start: 5.0
+  v_amp: 3.0        # wind toward +y (east): crosswind from the left
+  v_len: 0.0        # step => steady crosswind from onset
+
+waves:
+  enabled: false

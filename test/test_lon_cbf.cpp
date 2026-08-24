@@ -475,6 +475,35 @@ TEST_CASE("impact barrier frozen model preserves the true attitude gradient",
   CHECK(g_frozen == Approx(g_true).epsilon(1e-3));
 }
 
+// Twin-float W/2 split: the barrier applies the single-surface TN 1516 theory
+// per planing surface with W/n_surfaces. Since n_peak ~ W^(-1/3), the two-float
+// value is 2^(1/3) x the single-surface value at the SAME contact state -- the
+// conservative direction for symmetric contact (impact_load_barrier_spec.md 7-8).
+TEST_CASE("impact barrier splits weight W/n_surfaces (2^(1/3) for twin floats)",
+          "[lon_cbf]") {
+  Setup s;
+  const double V = 16.0, gamma = -3.0 * kDeg, theta = 4.0 * kDeg;
+  AeroLocal a = makeAeroLocal(s.table, s.mx, s.cfg, V, theta - gamma);
+  LonStateVec X;
+  X << 4.0, V, gamma, theta, 0.0, 2.0, 0.0;
+  // n_limit = 0, Nb = 0  =>  b = -n_peak; compare 1 vs 2 planing surfaces.
+  const ImpactLoadBarrier b1 = makeImpactLoadBarrier(
+      a, 0.0, 22.5 * kDeg, 1000.0, 0.0, 2.0, 0.0, 0.02, X, 1);
+  const ImpactLoadBarrier b2 = makeImpactLoadBarrier(
+      a, 0.0, 22.5 * kDeg, 1000.0, 0.0, 2.0, 0.0, 0.02, X, 2);
+  const double np1 = -b1(toArray(X));
+  const double np2 = -b2(toArray(X));
+  REQUIRE(np1 > 0.0);
+  CHECK(np2 / np1 == Approx(std::cbrt(2.0)).epsilon(1e-6));
+
+  // Same scaling in the exact (unfrozen) evaluator used for the touchdown truth.
+  const double e1 = impactNPeakExact(a.mass, a.g, 22.5 * kDeg, 1000.0, 0.02, theta,
+                                     -gamma, 1.5, 1);
+  const double e2 = impactNPeakExact(a.mass, a.g, 22.5 * kDeg, 1000.0, 0.02, theta,
+                                     -gamma, 1.5, 2);
+  CHECK(e2 / e1 == Approx(std::cbrt(2.0)).epsilon(1e-9));
+}
+
 // Relative degree: a degree-2 HOCBF. The elevator appears in L_g L_f b; thrust
 // (Tddot, relative degree 3) does NOT (its column is ~0). This is exactly what
 // lets the degree-2 row be flare-enforced while reusing barrierLie<2>.
