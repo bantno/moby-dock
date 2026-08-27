@@ -65,6 +65,15 @@ the POH float configuration (flaps 35°, 33.5 m/s, θ_trim 0.2°) is its own cas
 (+5: check-case oracle, trim recovery, cruise modes, wind coupling, closed-loop calm landing).
 **Why:** paper_readiness §6 — validate the flight-validated plant is implemented correctly before
 moving the CBF machinery onto it.
+**Addendum 2 (same session) — full-envelope 6-DOF validation:** the wings-level oracles can't see
+the rate-quadratic terms (gyroscopic, Ixz(p²−r²), ω×v — zero at the check state AND in trim-point
+Jacobians). New `scripts/validate_beaver_sixdof.py` + `beaver_validation --xdot/--doublet` close
+that regime vs the independent Python implementation: 256-state random envelope sweep (rates to
+1.2 rad/s, bank to 60°, flaps, all controls) matches all 11 ẋ rows to 3.3e-9; steady coordinated
+turns (φ to ±45°, solved on the independent model, n_z=1/cosφ + ψ̇=g tanφ/V anchors) are C++
+equilibria to 1.4e-9; a 14 s open-loop doublet integrated by both implementations overlays to
+8e-9 m/s / 3e-8 deg. The 30° turn is a permanent unit test (77 green). Figure:
+`figures/beaver_sixdof_validation.png`; doc §5 in beaver_validation.md.
 **Addendum (same session):** fig. 10.13's solid curve was PIXEL-DIGITIZED from a 400-dpi render
 (`data/fdc_fig1013_solid_digitized.csv`) and identified as a fixed-pz≈20 "Hg trim (γ free): our
 fixed-pz curve reproduces it with a uniform ~0.3° offset while the exact-condition ACTRIM point

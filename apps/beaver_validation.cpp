@@ -105,9 +105,107 @@ void dumpMat(const std::string& path, const Mat& M) {
       f << M(i, j) << (j + 1 < M.cols() ? ',' : '\n');
   }
 }
+// --- `--xdot in.csv out.csv`: evaluate the plant xdot at arbitrary states. --
+// Input rows: h_ref,n_rpm,flap, u,v,w,p,q,r,phi,theta,psi,h,y, de,da,dr,dT
+// (SI/rad). Output rows: the 11 xdot components at full double precision.
+// Consumed by scripts/validate_beaver_sixdof.py, which compares every row
+// against the independent Python implementation over the whole flight
+// envelope -- large body rates, bank, sideslip, flaps -- the regime the
+// wings-level oracles cannot exercise (quadratic gyroscopic/Coriolis terms).
+int dumpXdot(const std::string& in_csv, const std::string& out_csv) {
+  std::ifstream in(in_csv);
+  if (!in) {
+    std::cerr << "cannot open " << in_csv << "\n";
+    return EXIT_FAILURE;
+  }
+  std::ofstream outf(out_csv);
+  outf << std::setprecision(17);
+  std::string line;
+  std::getline(in, line);  // header
+  int n = 0;
+  while (std::getline(in, line)) {
+    std::vector<double> v;
+    std::size_t pos = 0;
+    while (pos <= line.size()) {
+      const std::size_t nxt = line.find(',', pos);
+      v.push_back(std::stod(line.substr(pos, nxt - pos)));
+      if (nxt == std::string::npos) break;
+      pos = nxt + 1;
+    }
+    if (v.size() != 18) {
+      std::cerr << "bad row (" << v.size() << " fields)\n";
+      return EXIT_FAILURE;
+    }
+    BeaverPlantConfig pc;
+    pc.h_ref = v[0];
+    pc.n_rpm = v[1];
+    pc.flap = v[2];
+    BeaverDynamics dyn(pc);
+    StateVec x;
+    for (int i = 0; i < NX; ++i) x[i] = v[3 + i];
+    CtrlVec u;
+    for (int i = 0; i < NU; ++i) u[i] = v[3 + NX + i];
+    const StateVec xd = dyn.xdot(x, u);
+    for (int i = 0; i < NX; ++i) outf << xd[i] << (i + 1 < NX ? ',' : '\n');
+    ++n;
+  }
+  std::cout << "evaluated xdot at " << n << " states -> " << out_csv << "\n";
+  return EXIT_SUCCESS;
+}
+
+// --- `--doublet out.csv`: open-loop 6-DOF maneuver time response. ----------
+// From the 40 m/s level trim: elevator doublet (+/-3 deg, t=1..3 s), aileron
+// pulse (+5 deg, t=5..5.7 s), rudder pulse (-5 deg, t=8..8.7 s), RK4 at
+// dt=0.01 for 14 s. The trace is re-integrated by the independent Python
+// implementation from the SAME initial state/schedule and overlaid -- a
+// time-domain cross-check of the full coupled dynamics at finite rates.
+int dumpDoublet(const std::string& out_csv) {
+  constexpr double d = M_PI / 180.0;
+  BeaverPlantConfig pc;  // sea level, n=1800, flaps up
+  BeaverDynamics dyn(pc);
+  const TrimResult t0 = beaverTrim(dyn, 40.0, 0.0);
+  if (!t0.converged) {
+    std::cerr << "doublet: trim failed\n";
+    return EXIT_FAILURE;
+  }
+  std::ofstream outf(out_csv);
+  outf << std::setprecision(17);
+  outf << "t,u,v,w,p,q,r,phi,theta,psi,h,y,de,da,dr,dT\n";
+  StateVec x = t0.x;
+  x[H] = 200.0;
+  const double dt = 0.01;
+  for (int k = 0; k <= 1400; ++k) {
+    const double t = k * dt;
+    CtrlVec u = t0.u;
+    if (t >= 1.0 && t < 2.0) u[DE] += 3.0 * d;
+    else if (t >= 2.0 && t < 3.0) u[DE] -= 3.0 * d;
+    if (t >= 5.0 && t < 5.7) u[DA] += 5.0 * d;
+    if (t >= 8.0 && t < 8.7) u[DR] -= 5.0 * d;
+    outf << t;
+    for (int i = 0; i < NX; ++i) outf << ',' << x[i];
+    for (int i = 0; i < NU; ++i) outf << ',' << u[i];
+    outf << '\n';
+    x = rk4Step([&dyn](const StateVec& xs, const CtrlVec& us)
+                    { return dyn.xdot(xs, us); },
+                x, u, dt);
+  }
+  std::cout << "doublet response (14 s open loop) -> " << out_csv << "\n";
+  return EXIT_SUCCESS;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--xdot") {
+    if (argc < 4) {
+      std::cerr << "usage: beaver_validation --xdot in.csv out.csv\n";
+      return EXIT_FAILURE;
+    }
+    return dumpXdot(argv[2], argv[3]);
+  }
+  if (argc > 1 && std::string(argv[1]) == "--doublet") {
+    return dumpDoublet(argc > 2 ? argv[2] : "results/beaver_doublet_cpp.csv");
+  }
+
   const std::string out = argc > 1 ? argv[1] : "results/beaver";
   std::cout << std::setprecision(6);
 

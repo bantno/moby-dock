@@ -120,6 +120,36 @@ The modes at 45 m/s cruise are the classic Beaver set: short period −2.16 ± 2
 (ωn 3.2 rad/s, ζ 0.67), phugoid −0.016 ± 0.263i (ζ 0.06), roll −5.13, Dutch roll
 −0.48 ± 0.97i (ωn 1.1, ζ 0.44), spiral −0.046 (weakly stable).
 
+### 5. Full-envelope 6-DOF — large rates, bank, turning flight (added 2026-08-26)
+
+The four checks above all sit at p = q = r = 0 wings-level, where the quadratic
+gyroscopic/Coriolis terms ((Izz−Iyy)qr, Ixz(p²−r²), ω×v) and the large-attitude
+kinematics contribute nothing — even the trim-point Jacobians can't see them.
+`scripts/validate_beaver_sixdof.py` (figure: `figures/beaver_sixdof_validation.png`)
+closes that regime against the same independent implementation:
+
+* **Random-state sweep** — 256 states spanning the envelope (V 28–58 m/s, α to 16°,
+  β to ±15°, body rates to ±1.2 rad/s, bank to ±60°, full control deflections,
+  flaps 0/20/35°, three altitudes/RPMs). All 11 ẋ rows match the independent
+  implementation pointwise to **3.3e−9** normalized (the floor is the C++ smooth-V
+  guard, not a modeling difference; pass threshold 1e−8).
+* **Steady coordinated turns** — level-turn equilibria at φ = ±15/30/45° solved on
+  the *independent* implementation (nonzero p, q, r), with the physics anchors
+  checked: n_z tracks 1/cos φ, ψ̇ = g tan φ/V, R = V²/(g tan φ). The C++ plant
+  agrees they are equilibria to **1.4e−9** — the gyroscopic terms validated by
+  cross-implementation *and* physics. The 30° case is a permanent unit test
+  (`test_beaver_dynamics.cpp`, 77 tests total).
+* **Open-loop doublet** — a 14 s elevator-doublet + aileron + rudder maneuver
+  (q to 0.15 rad/s, φ to 10°, full short-period/Dutch-roll/spiral content)
+  integrated by both implementations from the same state/controls: trajectories
+  agree to **8e−9 m/s** in V and **3e−8 deg** in attitude over the full maneuver.
+
+With this, every term of the 6-DOF EOM has been exercised by a check that could
+fail: the static rows by the external FDC oracle, the first-order dynamics by the
+mode cross-check, and the rate-quadratic/attitude terms by the sweep, the turns,
+and the doublet. Remaining caveats are *model-validity* (attached flow, 35–55 m/s
+band, landplane config), not implementation.
+
 ## Closed-loop 6-DOF landing cases
 
 `plant: beaver` is now the `sixdof_autoland_sim` default (the AHAB deck remains

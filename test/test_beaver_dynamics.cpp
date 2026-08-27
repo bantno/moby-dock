@@ -165,6 +165,52 @@ TEST_CASE("Beaver linearized modes are the classic set at cruise",
   CHECK(std::abs(spiral) < 0.15);            // near-neutral (here: stable)
 }
 
+// A steady coordinated 30-deg-bank level turn at 40 m/s IS an equilibrium of
+// the plant. The trim state below was solved to ~1e-12 on the INDEPENDENT
+// Python implementation (scripts/validate_beaver_sixdof.py turn_trim), so
+// this is a cross-implementation check at NONZERO body rates -- the one
+// regime the wings-level oracles cannot see: it exercises the quadratic
+// gyroscopic terms ((Izz-Iyy)qr, Ixz(p^2-r^2), ...), the omega x v Coriolis
+// terms, and the banked-attitude kinematics. The physics anchor: n_z matches
+// 1/cos(phi) and psidot = g tan(phi)/V by construction of the solve.
+TEST_CASE("Steady 30-deg coordinated turn is an equilibrium (gyroscopic terms)",
+          "[beaver6]") {
+  const double V0 = 40.0, phi = 30.0 * kDeg;
+  const double alpha = 0.180149730674244, beta = -0.022711703564002;
+  const double theta = 0.145151507839705;
+  const double de = -0.099018121327235, da = 0.058757054469476,
+               dr = -0.073000017611803, pz = 24.563634304513656;
+  const double p = -0.020473661276978, q = 0.070029147336906,
+               r = 0.121294041198248;
+
+  BeaverDynamics dyn;  // sea level, n=1800, flaps up
+  StateVec x = StateVec::Zero();
+  x[U] = V0 * std::cos(alpha) * std::cos(beta);
+  x[V] = V0 * std::sin(beta);
+  x[W] = V0 * std::sin(alpha) * std::cos(beta);
+  x[P] = p;
+  x[Q] = q;
+  x[R] = r;
+  x[PHI] = phi;
+  x[THETA] = theta;
+  CtrlVec u = CtrlVec::Zero();
+  u[DE] = de;
+  u[DA] = da;
+  u[DR] = dr;
+  u[DT] = (pz - dyn.config().pz_idle) /
+          (dyn.config().pz_max - dyn.config().pz_idle);
+
+  const StateVec xd = dyn.xdot(x, u);
+  for (int i : {U, V, W, P, Q, R})
+    CHECK(std::abs(xd[i]) < 1e-8);  // dynamic rows vanish
+  // Euler kinematics of the steady turn: phidot = thetadot = 0, psidot = Om.
+  const double Om = 9.80665 * std::tan(phi) / V0;
+  CHECK(std::abs(xd[PHI]) < 1e-9);
+  CHECK(std::abs(xd[THETA]) < 1e-9);
+  CHECK(xd[PSI] == Approx(Om).epsilon(1e-9));
+  CHECK(std::abs(xd[H]) < 1e-8);  // level turn
+}
+
 // Wind enters only through the aerodynamics: zero wind is bit-identical, the
 // kinematic rows are wind-invariant, and the physical gust signs are right.
 TEST_CASE("Beaver wind coupling: zero-wind identity and aero signs",
