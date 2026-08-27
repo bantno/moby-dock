@@ -108,6 +108,7 @@ add_library(autoland_core
   src/lon_cbf_filter.cpp
   src/lon_sim.cpp
   src/sixdof_sim.cpp
+  src/beaver_dynamics.cpp
 )
 target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # autodiff is used in public headers (lie_taylor.hpp), so it must be PUBLIC.
@@ -139,6 +140,9 @@ target_link_libraries(lon_autoland_sim PRIVATE autoland_core)
 add_executable(sixdof_autoland_sim apps/sixdof_autoland_sim.cpp)
 target_link_libraries(sixdof_autoland_sim PRIVATE autoland_core)
 
+add_executable(beaver_validation apps/beaver_validation.cpp)
+target_link_libraries(beaver_validation PRIVATE autoland_core)
+
 # -----------------------------------------------------------------------------
 # Tests
 # -----------------------------------------------------------------------------
@@ -162,6 +166,7 @@ add_executable(unit_tests
   test/test_sixdof_sim.cpp
   test/test_beaver_aero.cpp
   test/test_beaver_lon.cpp
+  test/test_beaver_dynamics.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)

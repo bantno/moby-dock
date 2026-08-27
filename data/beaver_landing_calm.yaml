@@ -1,0 +1,41 @@
+# =============================================================================
+# DHC-2 Beaver 6-DOF straight-in water-landing, calm conditions.
+#
+# Plant: the flight-validated Beaver polynomial model (LR-556 / FDC 1.2),
+# evaluated directly -- see beaver_dynamics.hpp and apps/beaver_validation.cpp
+# for the model validation (FDC ACTRIM check case, trim curve, modal
+# cross-check). Clean-configuration approach at 40 m/s / -3.5 deg: comfortably
+# inside the LR-556 35-55 m/s TAS validity band with ~7 deg of stall margin
+# (35 m/s clean trims at alpha ~12.9 deg -- too close to the ~16 deg stall for
+# a disturbance-rejection case). The POH float-approach configuration (flaps
+# 35, 33.5 m/s) is the separate beaver_landing_poh.yaml. No flare yet, so
+# touchdown is at glideslope sink like the AHAB scenarios.
+#
+# Engine: constant-speed prop at 1800 RPM; throttle = manifold pressure on
+# [pz_idle, pz_max] "Hg. Flaps up (the validated trim references are clean-
+# config; flapped cases can set beaver.flap_deg).
+#
+# Controller feedforwards (theta/de/dT/da/dr trim) come from the 6-axis trim
+# solve at (V_app, gamma_app_deg); `nominal:` fields override the
+# Beaver-default gains set in sixdof_sim.cpp.
+# =============================================================================
+
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 1800.0
+  pz_idle: 5.0
+  pz_max: 26.0
+  flap_deg: 0.0
+
+dt: 0.01
+t_max: 120.0
+
+initial:
+  h0: 60.0
+
+# Twin-float airframe: TN 1516 single-surface theory applied per float at W/2.
+hull:
+  n_surfaces: 2

@@ -15,6 +15,8 @@
 # at (V_app, gamma_app_deg); fields under nominal: override the gains.
 # =============================================================================
 
+# AHAB VSPAERO-table plant (the pre-Beaver default; see sixdof_sim.hpp).
+plant: vspaero
 V_app: 18.0           # approach airspeed [m/s]
 gamma_app_deg: -3.0   # approach flight-path angle [deg] (negative = descent).
                       # Powered approach: with the corrected deck drag the

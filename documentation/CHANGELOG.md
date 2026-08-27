@@ -39,6 +39,42 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-08-26 — Brian — Beaver 6-DOF plant wired + validated vs FDC references; Beaver landing-case suite
+**Branch/commit:** 6dof
+**What changed:** The DHC-2 Beaver is now a real 6-DOF plant (`beaver_dynamics.hpp/.cpp`) —
+direct evaluation of the verified LR-556/FDC polynomials (no table export), templated scalar so
+trim Jacobians and the state-space linearization are EXACT autodiff (no finite differences).
+Propulsion is throttle→manifold-pressure→power→dpt at fixed RPM; atmosphere is the exact ICAO
+troposphere + inverse-square gravity (both confirmed as FDC's own models). `plant: beaver` is the
+`sixdof_autoland_sim` DEFAULT; the AHAB deck stays selectable (`plant: vspaero`, existing
+scenarios/tests tagged and green). **Validation (documentation/beaver_validation.md):** (1) the
+FDC 1.2 manual's printed ACTRIM check case is reproduced to print precision (all six acceleration
+rows ≤3.3e-6); (2) our new 6-axis Newton trim recovers the FDC trim to 0.002° in α/θ and 0.0004°
+in δe (the lateral deltas are FDC's own fmins tolerance — its printed β̇ residual is 4.6e-4);
+(3) the level-flight trim sweep tracks fig. 10.13 through every digitized point; (4) an
+INDEPENDENT Python re-implementation (FDC state coords, freshly-typed coefficients, complex-step)
+agrees with the C++ linearization to 4e-10 relative on all eigenvalues — classic Beaver modes
+(SP 3.2 rad/s ζ0.67, phugoid 0.26 ζ0.06, roll −5.1, DR 1.1 ζ0.44, spiral −0.05). **Landing
+cases** (`data/beaver_landing_{calm,crosswind,gust,waves_lake,poh}.yaml`, plots in results/):
+all land on target; gains re-sized for 2288 kg; the nominal gained per-axis control-SENSE signs
+(`de_sign/da_sign/dr_sign`) — the Beaver's standard Delft signs (Cm_de, Cl_da, Cn_dr < 0) are
+OPPOSITE the AHAB virtual controls on all three axes (with AHAB signs the roll loop is positive
+feedback → inverted in ~6 s) — plus δa/δr trim feedforwards (slipstream asymmetry trims at
+β≈−0.9°, δr≈−2.3°). Standard cases fly 40 m/s clean (35 clean trims at α≈12.9°, ~3° from stall);
+the POH float configuration (flaps 35°, 33.5 m/s, θ_trim 0.2°) is its own case. 76 tests green
+(+5: check-case oracle, trim recovery, cruise modes, wind coupling, closed-loop calm landing).
+**Why:** paper_readiness §6 — validate the flight-validated plant is implemented correctly before
+moving the CBF machinery onto it.
+**Follow-ups / notes for collaborator:** two reference-condition traps documented in
+beaver_validation.md: the ACTRIM check case is at the SEA-LEVEL atmosphere (the 2000 ft prompt
+seeds only the sim IC), and FDC eq. 3.15's altitude correction multiplies only the (408−0.0965n)
+term. Remaining: CBF re-tune on the Beaver, flare/decrab, u_P spool-rate bound.
+**Files touched:** `include/autoland/{beaver_dynamics,beaver_aero,sixdof_sim,sixdof_nominal}.hpp`,
+`src/{beaver_dynamics,sixdof_sim}.cpp`, `apps/{beaver_validation,sixdof_autoland_sim}.cpp`,
+`scripts/{validate_beaver_modes,plot_beaver_validation}.py`, `test/test_beaver_dynamics.cpp`,
+`data/beaver_landing_*.yaml`, `data/sixdof_*.yaml` (plant tag), `documentation/beaver_validation.md`,
+`CMakeLists.txt`, `results/beaver_*`.
+
 ## 2026-08-20 — Brian — Beaver plant (LR-556, verified) + W/2 float impact split + single-integrator-power degree-2 impact barrier
 **Branch/commit:** 6dof
 **What changed:** Groundwork to swap the self-authored VSPAERO plant for the **flight-validated

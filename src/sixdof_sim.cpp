@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 #include "autoland/impact_barrier.hpp"
@@ -68,19 +69,19 @@ GroundKinematics groundKinematics(const StateVec& x) {
 // RK4 step of the joint system [x; x_gust]: the gust penetration distance is
 // a genuine state (xdot = airspeed after onset), integrated with the aircraft
 // like lon_sim's rk4Wind. With wind disabled every gust term is exactly zero,
-// so this single path is bit-identical to a still-air RK4 of Dynamics::xdot.
+// so this single path is bit-identical to a still-air RK4 of the plant xdot.
 struct JointState {
   StateVec x;
   double xg;
 };
-JointState rk4WindStep(const Dynamics& dyn, const DiscreteGustConfig& g,
-                       double t, const StateVec& x, double xg,
-                       const CtrlVec& u, double dt) {
+JointState rk4WindStep(const SixDofSim::PlantFn& plant,
+                       const DiscreteGustConfig& g, double t, const StateVec& x,
+                       double xg, const CtrlVec& u, double dt) {
   auto deriv = [&](double tl, const StateVec& xl, double xgl, StateVec& xd,
                    double& xgd) {
     const GustWind Wg = gustWind(g, xgl);
     xgd = gustXdot(g, tl, airData(xl, Wg).V);
-    xd = dyn.xdot(xl, u, Eigen::Vector3d(Wg.u, Wg.v, Wg.w));
+    xd = plant(xl, u, Eigen::Vector3d(Wg.u, Wg.v, Wg.w));
   };
   StateVec k1, k2, k3, k4;
   double g1, g2, g3, g4;
@@ -95,32 +96,88 @@ JointState rk4WindStep(const Dynamics& dyn, const DiscreteGustConfig& g,
 
 SixDofSim::SixDofSim(const std::string& stab_path,
                      const std::string& aircraft_yaml,
-                     const std::string& scenario_yaml)
-    : table_(AeroTable::fromFile(stab_path)),
-      ac_(loadAircraftConfig(aircraft_yaml)) {
-  mixing_ = std::make_unique<Mixing>(Mixing::build(ac_, table_));
-  dyn_ = std::make_unique<Dynamics>(table_, *mixing_, ac_);
-
+                     const std::string& scenario_yaml) {
   YAML::Node root = YAML::LoadFile(scenario_yaml);
-  sc_.V_app = getOr(root, "V_app", 18.0);
-  sc_.gamma_app = getOr(root, "gamma_app_deg", -3.0) * kDeg;
+  const std::string plant =
+      (root && root["plant"]) ? root["plant"].as<std::string>() : "beaver";
+  const bool beaver = (plant == "beaver");
+  if (!beaver && plant != "vspaero")
+    throw std::runtime_error("sixdof_sim: unknown plant '" + plant + "'");
+
+  SixDofNominalConfig& nom = sc_.nominal;
+  if (beaver) {
+    // --- DHC-2 Beaver plant (validated LR-556/FDC polynomials). -------------
+    BeaverPlantConfig bpc;
+    YAML::Node yb = root["beaver"];
+    bpc.n_rpm = getOr(yb, "n_rpm", bpc.n_rpm);
+    bpc.pz_idle = getOr(yb, "pz_idle", bpc.pz_idle);
+    bpc.pz_max = getOr(yb, "pz_max", bpc.pz_max);
+    bpc.flap = getOr(yb, "flap_deg", 0.0) * kDeg;
+    bpc.h_ref = getOr(yb, "h_ref", 0.0);
+    bdyn_ = std::make_unique<BeaverDynamics>(bpc);
+    plant_ = [this](const StateVec& x, const CtrlVec& u,
+                    const Eigen::Vector3d& W) { return bdyn_->xdot(x, u, W); };
+
+    // AircraftConfig mirror for the sim's diagnostics (TN 1516 mass/g) and
+    // the nominal's surface limits.
+    ac_.inertia.mass = BeaverGeom::mass;
+    ac_.inertia.Ixx = BeaverGeom::Ix;
+    ac_.inertia.Iyy = BeaverGeom::Iy;
+    ac_.inertia.Izz = BeaverGeom::Iz;
+    ac_.inertia.Ixz = BeaverGeom::Ixz;
+    ac_.env.rho = bdyn_->rho();
+    ac_.env.g = bdyn_->g();
+    ac_.limits = bpc.limits;
+
+    // Beaver-scale defaults (2288 kg): approach inside the LR-556 30-55 m/s
+    // validity band; gains sized to the Beaver's control authorities
+    // (M_de ~ 7.7 rad/s^2 per rad at 35 m/s, L_da ~ 4.7, throttle ~ 1.5
+    // m/s^2 per unit dT) -- the AHAB defaults are for a 3.6 kg airframe.
+    sc_.V_app = 35.0;
+    sc_.gamma_app = -3.5 * kDeg;
+    nom.Kp_V = 0.15; nom.Ki_V = 0.03;
+    nom.Kp_gamma = 1.5; nom.Ki_gamma = 0.3;
+    nom.Kv_gamma = 0.02; nom.dgamma_V_max = 3.0 * kDeg;
+    nom.theta_cmd_max = 10.0 * kDeg;
+    nom.Kp_theta = 0.8; nom.Ki_theta = 0.3; nom.Kq = 0.5;
+    nom.Kp_y = 0.01; nom.Kd_y = 0.05; nom.phi_max = 15.0 * kDeg;
+    nom.Kp_phi = 2.0; nom.Kp_p = 0.8; nom.Kr = 0.5;
+    // Standard Delft/FDC deflection signs (Cm_de, Cl_da, Cn_dr all < 0).
+    nom.de_sign = -1.0; nom.da_sign = -1.0; nom.dr_sign = -1.0;
+  } else {
+    // --- AHAB VSPAERO-table plant (original path). --------------------------
+    table_ = std::make_unique<AeroTable>(AeroTable::fromFile(stab_path));
+    ac_ = loadAircraftConfig(aircraft_yaml);
+    mixing_ = std::make_unique<Mixing>(Mixing::build(ac_, *table_));
+    dyn_ = std::make_unique<Dynamics>(*table_, *mixing_, ac_);
+    plant_ = [this](const StateVec& x, const CtrlVec& u,
+                    const Eigen::Vector3d& W) { return dyn_->xdot(x, u, W); };
+    sc_.V_app = 18.0;
+    sc_.gamma_app = -3.0 * kDeg;
+  }
+
+  sc_.V_app = getOr(root, "V_app", sc_.V_app);
+  sc_.gamma_app = getOr(root, "gamma_app_deg", sc_.gamma_app / kDeg) * kDeg;
   sc_.dt = getOr(root, "dt", 0.01);
   sc_.t_max = getOr(root, "t_max", 200.0);
 
-  // Approach trim: nominal feedforwards + the initial condition.
-  trim_ = trim(*dyn_, sc_.V_app, sc_.gamma_app);
+  // Approach trim: nominal feedforwards + the initial condition. The Beaver
+  // trims all six axes (nonzero beta/da/dr from slipstream asymmetry).
+  trim_ = beaver ? beaverTrim(*bdyn_, sc_.V_app, sc_.gamma_app)
+                 : trim(*dyn_, sc_.V_app, sc_.gamma_app);
   stats_.trim_converged = trim_.converged;
   if (!trim_.converged)
     std::cerr << "[sixdof_sim] warning: approach trim did not converge (res="
               << trim_.residual << ")\n";
 
   // --- Nominal defaults from trim (then YAML overrides) ---
-  SixDofNominalConfig& nom = sc_.nominal;
   nom.V_ref = sc_.V_app;
   nom.gamma_ref = sc_.gamma_app;
   nom.theta_trim = trim_.theta;
   nom.de_trim = trim_.u[DE];
   nom.dT_trim = trim_.u[DT];
+  nom.da_trim = trim_.u[DA];
+  nom.dr_trim = trim_.u[DR];
   nom.limits = ac_.limits;
   YAML::Node yn = root["nominal"];
   nom.V_ref = getOr(yn, "V_ref", nom.V_ref);
@@ -190,8 +247,11 @@ SixDofSim::SixDofSim(const std::string& stab_path,
 
   x0_ = trim_.x;
   const double vscale = (sc_.V_app + sc_.dV) / std::max(1e-6, sc_.V_app);
+  // Scale the whole velocity triad (the Beaver trims with small nonzero v =
+  // V sin(beta); scaling preserves the trim alpha/beta).
   x0_[U] *= vscale;
-  x0_[W] *= vscale;  // v = 0 at trim (wings-level, zero-sideslip)
+  x0_[V] *= vscale;
+  x0_[W] *= vscale;
   x0_[THETA] += sc_.dtheta;
   x0_[PSI] += sc_.dpsi;
   x0_[H] = sc_.h0;
@@ -287,7 +347,7 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
       break;
     }
 
-    const JointState js = rk4WindStep(*dyn_, sc_.wind, t, x, x_gust, u, dt);
+    const JointState js = rk4WindStep(plant_, sc_.wind, t, x, x_gust, u, dt);
     // Ground-track trapezoid across the step (endpoint north velocities).
     x_pos += 0.5 * dt * (gk.xdot_n + groundKinematics(js.x).xdot_n);
     x = js.x;
@@ -298,9 +358,18 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
   stats_.t_end = t;
 
   std::cout << "=== 6-DOF straight-in landing ===\n";
+  std::cout << "plant: "
+            << (bdyn_ ? "DHC-2 Beaver (LR-556/FDC polynomials)"
+                      : "AHAB VSPAERO deck")
+            << "\n";
   std::cout << "trim: theta=" << trim_.theta / kDeg << " deg  de="
-            << trim_.u[DE] / kDeg << " deg  dT=" << trim_.u[DT]
-            << "  (V_app=" << sc_.V_app << " m/s, gamma_app="
+            << trim_.u[DE] / kDeg << " deg  dT=" << trim_.u[DT];
+  if (bdyn_)
+    std::cout << " (pz=" << bdyn_->pzFromThrottle(trim_.u[DT]) << " \"Hg, P="
+              << bdyn_->power(trim_.u[DT]) << " kW)  da="
+              << trim_.u[DA] / kDeg << " deg  dr=" << trim_.u[DR] / kDeg
+              << " deg";
+  std::cout << "  (V_app=" << sc_.V_app << " m/s, gamma_app="
             << sc_.gamma_app / kDeg << " deg)\n";
   if (sc_.wind.enabled) {
     std::cout << "  MIL-F-8785C discrete gust (plant-only, unmeasured): t_start="

@@ -1,0 +1,25 @@
+# =============================================================================
+# DHC-2 Beaver 6-DOF POH-configuration float approach: flaps 35 deg at
+# 33.5 m/s (75 mph) and ~-3.5 deg (~400 fpm), the published seaplane approach.
+# The LR-556 flap derivatives are part of the validated polynomial set, so
+# this exercises the landing configuration proper; trim sits at a much more
+# representative attitude than the clean 33.5 m/s case (which would be ~13 deg
+# alpha). See beaver_landing_calm.yaml for the plant/validation notes.
+# =============================================================================
+
+plant: beaver
+V_app: 33.5
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 2000.0     # a bit more RPM in the landing configuration
+  flap_deg: 35.0
+
+dt: 0.01
+t_max: 120.0
+
+initial:
+  h0: 60.0
+
+hull:
+  n_surfaces: 2

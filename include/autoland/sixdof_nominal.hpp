@@ -26,7 +26,10 @@ struct SixDofNominalConfig {
   double V_ref{18.0};        // approach airspeed [m/s]
   double gamma_ref{-0.052};  // inertial flight-path angle [rad] (negative=descent)
   // Trim feedforward (seeded from the Newton trim at (V_ref, gamma_ref)).
+  // da/dr matter for the Beaver plant, whose slipstream asymmetry trims with
+  // small nonzero aileron/rudder (zero on the symmetric VSPAERO deck).
   double theta_trim{0.0}, de_trim{0.0}, dT_trim{0.0};
+  double da_trim{0.0}, dr_trim{0.0};
   // Airspeed loop: throttle = dT_trim + Kp_V eV + Ki_V int(eV).
   double Kp_V{0.05}, Ki_V{0.02};
   // Glidepath: gamma_ref_eff = gamma_ref + clamp(Kv_gamma (V - V_ref)), then
@@ -60,6 +63,12 @@ struct SixDofNominalConfig {
   // delta_a). 0.15 puts the pole at ~69 rad/s (0.69 per step).
   double Kp_phi{1.0}, Kp_p{0.15};
   double Kr{0.2};
+  // Control-effectiveness SENSE per axis, multiplying the feedback terms
+  // (never the trim feedforward). +1 = the AHAB virtual-control sense
+  // (positive de -> nose UP, positive da -> roll RIGHT, positive dr -> yaw
+  // damping via -Kr r). The Beaver plant uses the standard Delft/FDC signs
+  // (Cm_de < 0, Cl_da < 0, Cn_dr < 0), i.e. -1 on all three.
+  double de_sign{1.0}, da_sign{1.0}, dr_sign{1.0};
   SurfaceLimits limits;  // deflection + rate limits (aircraft.yaml)
 };
 
@@ -111,8 +120,9 @@ class SixDofNominal {
     // --- Pitch inner PID -> elevator (anti-windup on the deflection clamp). --
     const double e_theta = theta_cmd - x[THETA];
     theta_int_ += e_theta * dt;
-    double de = c_.de_trim + c_.Kp_theta * e_theta + c_.Ki_theta * theta_int_ -
-                c_.Kq * x[Q];
+    double de = c_.de_trim +
+                c_.de_sign * (c_.Kp_theta * e_theta +
+                              c_.Ki_theta * theta_int_ - c_.Kq * x[Q]);
     if (de > c_.limits.de_max) { de = c_.limits.de_max; theta_int_ -= e_theta * dt; }
     else if (de < c_.limits.de_min) { de = c_.limits.de_min; theta_int_ -= e_theta * dt; }
     u[DE] = de;
@@ -123,8 +133,9 @@ class SixDofNominal {
     phi_cmd_ = phi_cmd;
 
     // --- Roll inner PD -> aileron; yaw damper -> rudder. ---------------------
-    u[DA] = c_.Kp_phi * (phi_cmd - x[PHI]) - c_.Kp_p * x[P];
-    u[DR] = -c_.Kr * x[R];
+    u[DA] = c_.da_trim +
+            c_.da_sign * (c_.Kp_phi * (phi_cmd - x[PHI]) - c_.Kp_p * x[P]);
+    u[DR] = c_.dr_trim + c_.dr_sign * (-c_.Kr * x[R]);
 
     return applyLimits(u, dt);
   }

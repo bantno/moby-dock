@@ -8,16 +8,18 @@
 // nominal, plant-side wind gust + surface waves; no CBF filter).
 //
 // Usage:
-//   sixdof_autoland_sim [stab] [aircraft.yaml] [sixdof_scenario.yaml] [out.csv]
+//   sixdof_autoland_sim [stab] [aircraft.yaml] [scenario.yaml] [out.csv]
 //
-// All arguments are optional and default to the bundled data/ files. The
-// default deck is the beta-symmetric sweep (full +/-20 deg sideslip grid) so
-// crosswind sideslip never leaves the table.
+// All arguments are optional. The default scenario flies the DHC-2 Beaver
+// plant (data/beaver_landing_calm.yaml); scenarios with `plant: vspaero`
+// (data/sixdof_*.yaml) use the AHAB deck instead, for which the stab and
+// aircraft.yaml paths apply (the defaults bundle the beta-symmetric sweep so
+// crosswind sideslip never leaves the table).
 int main(int argc, char** argv) {
   const std::string data = AUTOLAND_DATA_DIR;
   std::string stab = data + "/AHAB_combined_betasym.stab";
   std::string aircraft = data + "/aircraft.yaml";
-  std::string scenario = data + "/sixdof_scenario.yaml";
+  std::string scenario = data + "/beaver_landing_calm.yaml";
   std::string out = "sixdof_autoland_log.csv";
 
   if (argc > 1) stab = argv[1];

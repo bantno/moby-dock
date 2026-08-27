@@ -1,7 +1,9 @@
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 #include "autoland/aero_table.hpp"
+#include "autoland/beaver_dynamics.hpp"
 #include "autoland/config.hpp"
 #include "autoland/dynamics.hpp"
 #include "autoland/mixing.hpp"
@@ -11,13 +13,21 @@
 #include "autoland/wind_gust.hpp"
 
 // =============================================================================
-// 6-DOF straight-in water-landing simulation: the full nonlinear body-axis EOM
-// (Dynamics::xdot, the repo's single source of truth) closed with the cascaded
-// PID nominal (sixdof_nominal.hpp), against the plant-side wind gust and
-// surface-wave models. RK4 with zero-order-hold controls; runs to touchdown
-// (h <= eta(x, t); flat water when waves are disabled) or t_max. No CBF filter
-// yet -- the nominal command is applied directly, but the loop is shaped so
-// the filter drops in between step() and the integrator later.
+// 6-DOF straight-in water-landing simulation: a full nonlinear body-axis EOM
+// plant closed with the cascaded PID nominal (sixdof_nominal.hpp), against the
+// plant-side wind gust and surface-wave models. RK4 with zero-order-hold
+// controls; runs to touchdown (h <= eta(x, t); flat water when waves are
+// disabled) or t_max. No CBF filter yet -- the nominal command is applied
+// directly, but the loop is shaped so the filter drops in between step() and
+// the integrator later.
+//
+// PLANT SELECTION (scenario `plant:` key):
+//   * "beaver" (DEFAULT): the flight-validated DHC-2 Beaver polynomial model
+//     (beaver_dynamics.hpp, LR-556/FDC, validated against the FDC check case
+//     -- see apps/beaver_validation.cpp). Optional `beaver:` block sets
+//     n_rpm / pz_idle / pz_max / flap_deg / h_ref.
+//   * "vspaero": the original AHAB VSPAERO-table plant (Dynamics::xdot); needs
+//     the stab/aircraft.yaml paths passed to the constructor.
 // =============================================================================
 namespace autoland {
 
@@ -92,11 +102,18 @@ class SixDofSim {
   const SixDofScenario& scenario() const { return sc_; }
   const TrimResult& trimResult() const { return trim_; }
 
+  // Plant state derivative (wind-aware); bound to whichever plant is active.
+  using PlantFn =
+      std::function<StateVec(const StateVec&, const CtrlVec&,
+                             const Eigen::Vector3d&)>;
+
  private:
-  AeroTable table_;
-  AircraftConfig ac_;
-  std::unique_ptr<Mixing> mixing_;
-  std::unique_ptr<Dynamics> dyn_;
+  std::unique_ptr<AeroTable> table_;   // vspaero plant only
+  AircraftConfig ac_;                  // mass/env/limits for diagnostics
+  std::unique_ptr<Mixing> mixing_;     // vspaero plant only
+  std::unique_ptr<Dynamics> dyn_;      // vspaero plant only
+  std::unique_ptr<BeaverDynamics> bdyn_;  // beaver plant only
+  PlantFn plant_;
   TrimResult trim_;
   SixDofScenario sc_;
   StateVec x0_{StateVec::Zero()};

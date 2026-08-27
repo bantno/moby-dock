@@ -51,7 +51,8 @@ StateVec sampleState(int i) {
 std::string writeScenario(const std::string& name, const std::string& extra) {
   const std::string path = name;
   std::ofstream f(path);
-  f << "V_app: 18.0\n"
+  f << "plant: vspaero\n"
+       "V_app: 18.0\n"
        "gamma_app_deg: -3.0\n"
        "dt: 0.01\n"
        "t_max: 120.0\n"

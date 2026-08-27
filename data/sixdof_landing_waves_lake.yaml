@@ -8,6 +8,8 @@
 # All controller gains keep their defaults (sixdof_nominal.hpp).
 # =============================================================================
 
+# AHAB VSPAERO-table plant (the pre-Beaver default; see sixdof_sim.hpp).
+plant: vspaero
 V_app: 18.0
 gamma_app_deg: -3.0
 

@@ -82,52 +82,80 @@ struct BeaverAeroCoef {
          Cn_dpt3 = -0.003026;
 };
 
-// Engine shaft power [in the model's units] from manifold pressure Pz [inHg],
-// engine speed n [rpm], and air density rho [kg/m^3] (LR-556 / FDC engine model).
-inline double beaverEnginePower(double Pz, double n, double rho) {
+// Engine shaft power [kW] from manifold pressure Pz [inHg], engine speed
+// n [rpm], and air density rho [kg/m^3] (FDC eq. 3.15; the (1 - rho/rho0)
+// altitude correction multiplies ONLY the (408 - 0.0965 n) term -- with it on
+// the whole bracket, sea-level power would be a constant -240 W at any Pz).
+// Templated so the throttle Jacobian column is exact under autodiff.
+template <class T>
+T beaverEnginePowerT(const T& Pz, double n, double rho) {
   return 0.7355 * (-326.5 + (0.00412 * (Pz + 7.4) * (n + 2010.0) +
                              (408.0 - 0.0965 * n) * (1.0 - rho / 1.225)));
 }
+inline double beaverEnginePower(double Pz, double n, double rho) {
+  return beaverEnginePowerT<double>(Pz, n, rho);
+}
 
-// Normalized propeller total-pressure rise dpt = 0.08696 + 191.18 * 2P/(rho V^3).
-// This is the single "throttle" quantity the aero coefficients respond to.
-inline double beaverDpt(double P, double rho, double V) {
-  const double Vs = (std::abs(V) < 1e-3) ? 1e-3 : V;
+// Normalized propeller total-pressure rise dpt = 0.08696 + 191.18 * 2P/(rho V^3)
+// with P in [kW] (FDC eq. 3.14). This is the single "throttle" quantity the
+// aero coefficients respond to. Smooth V floor for autodiff (cf. the aero).
+template <class T>
+T beaverDptT(const T& P, double rho, const T& V) {
+  using std::sqrt;
+  const T Vs = sqrt(V * V + T(1e-6));
   return 0.08696 + 191.18 * (P * 2.0 / rho / (Vs * Vs * Vs));
+}
+inline double beaverDpt(double P, double rho, double V) {
+  return beaverDptT<double>(P, rho, V);
 }
 
 // Body-axis force/moment coefficients [CX, CY, CZ, Cl, Cm, Cn].
 //   alpha, beta [rad]; p, q, r [rad/s]; V [m/s]; de, da, dr, df [rad]; dpt [-].
+// Templated on the scalar type so the SAME polynomial serves the double plant
+// and exact autodiff (trim Jacobians / linearization in beaver_dynamics.hpp).
+// The V floor is smooth (no branch) so dual types differentiate through it.
+template <class T>
+std::array<T, 6> beaverAeroCoeffsT(const T& alpha, const T& beta, const T& p,
+                                   const T& q, const T& r, const T& V,
+                                   const T& de, const T& da, const T& dr,
+                                   const T& df, const T& dpt,
+                                   const BeaverAeroCoef& k = BeaverAeroCoef{}) {
+  using std::sqrt;
+  const T Vs = sqrt(V * V + T(1e-6));  // smooth floor (exact V above ~1e-2)
+  const T half_b_V = BeaverGeom::b / (2.0 * Vs);
+  const T phat = p * half_b_V;
+  const T rhat = r * half_b_V;
+  const T qhat = q * BeaverGeom::c / Vs;  // Beaver convention: q*c/V
+  const T& a = alpha;
+  const T& be = beta;
+
+  const T CX = k.Cx0 + k.Cx_a * a + k.Cx_a2 * a * a + k.Cx_a3 * a * a * a +
+               k.Cx_q * qhat + k.Cx_dr * dr + k.Cx_df * df +
+               k.Cx_adf * a * df + k.Cx_dpt * dpt +
+               k.Cx_dpt2a * dpt * dpt * a;
+  const T CY = k.Cy0 + k.Cy_b * be + k.Cy_p * phat + k.Cy_r * rhat +
+               k.Cy_da * da + k.Cy_dr * dr + k.Cy_dra * a * dr;
+  const T CZ = k.Cz0 + k.Cz_a * a + k.Cz_a3 * a * a * a + k.Cz_q * qhat +
+               k.Cz_de * de + k.Cz_deb2 * de * be * be + k.Cz_df * df +
+               k.Cz_adf * a * df + k.Cz_dpt * dpt;
+  const T Cl = k.Cl0 + k.Cl_b * be + k.Cl_p * phat + k.Cl_r * rhat +
+               k.Cl_da * da + k.Cl_dr * dr + k.Cl_daa * a * da +
+               k.Cl_a2dpt * a * a * dpt;
+  const T Cm = k.Cm0 + k.Cm_a * a + k.Cm_a2 * a * a + k.Cm_q * qhat +
+               k.Cm_de * de + k.Cm_b2 * be * be + k.Cm_r * rhat +
+               k.Cm_df * df + k.Cm_dpt * dpt;
+  const T Cn = k.Cn0 + k.Cn_b * be + k.Cn_p * phat + k.Cn_r * rhat +
+               k.Cn_da * da + k.Cn_dr * dr + k.Cn_q * qhat +
+               k.Cn_b3 * be * be * be + k.Cn_dpt3 * dpt * dpt * dpt;
+  return {CX, CY, CZ, Cl, Cm, Cn};
+}
+
 inline std::array<double, 6> beaverAeroCoeffs(
     double alpha, double beta, double p, double q, double r, double V, double de,
     double da, double dr, double df, double dpt,
     const BeaverAeroCoef& k = BeaverAeroCoef{}) {
-  const double Vs = (std::abs(V) < 1e-3) ? 1e-3 : V;
-  const double half_b_V = BeaverGeom::b / (2.0 * Vs);
-  const double phat = p * half_b_V;
-  const double rhat = r * half_b_V;
-  const double qhat = q * BeaverGeom::c / Vs;  // Beaver convention: q*c/V
-  const double a = alpha, be = beta;
-
-  const double CX = k.Cx0 + k.Cx_a * a + k.Cx_a2 * a * a + k.Cx_a3 * a * a * a +
-                    k.Cx_q * qhat + k.Cx_dr * dr + k.Cx_df * df +
-                    k.Cx_adf * a * df + k.Cx_dpt * dpt +
-                    k.Cx_dpt2a * dpt * dpt * a;
-  const double CY = k.Cy0 + k.Cy_b * be + k.Cy_p * phat + k.Cy_r * rhat +
-                    k.Cy_da * da + k.Cy_dr * dr + k.Cy_dra * a * dr;
-  const double CZ = k.Cz0 + k.Cz_a * a + k.Cz_a3 * a * a * a + k.Cz_q * qhat +
-                    k.Cz_de * de + k.Cz_deb2 * de * be * be + k.Cz_df * df +
-                    k.Cz_adf * a * df + k.Cz_dpt * dpt;
-  const double Cl = k.Cl0 + k.Cl_b * be + k.Cl_p * phat + k.Cl_r * rhat +
-                    k.Cl_da * da + k.Cl_dr * dr + k.Cl_daa * a * da +
-                    k.Cl_a2dpt * a * a * dpt;
-  const double Cm = k.Cm0 + k.Cm_a * a + k.Cm_a2 * a * a + k.Cm_q * qhat +
-                    k.Cm_de * de + k.Cm_b2 * be * be + k.Cm_r * rhat +
-                    k.Cm_df * df + k.Cm_dpt * dpt;
-  const double Cn = k.Cn0 + k.Cn_b * be + k.Cn_p * phat + k.Cn_r * rhat +
-                    k.Cn_da * da + k.Cn_dr * dr + k.Cn_q * qhat +
-                    k.Cn_b3 * be * be * be + k.Cn_dpt3 * dpt * dpt * dpt;
-  return {CX, CY, CZ, Cl, Cm, Cn};
+  return beaverAeroCoeffsT<double>(alpha, beta, p, q, r, V, de, da, dr, df,
+                                   dpt, k);
 }
 
 }  // namespace autoland

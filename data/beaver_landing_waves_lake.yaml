@@ -1,0 +1,35 @@
+# =============================================================================
+# DHC-2 Beaver 6-DOF lake-sea landing: the calm scenario with the WAVES toggle
+# on -- the fetch-limited JONSWAP lake sea of lon_landing_waves_lake.yaml
+# (U10 = 8 m/s over 3 km fetch => Hs 0.22 m, Tp 1.8 s, gamma 3.3, head seas).
+# Touchdown happens on the instantaneous surface h = eta(x, t); the console
+# reports the wave-referenced TN 1516 slam load (per float, W/2) that the
+# flat-water-blind controller never saw. See beaver_landing_calm.yaml for the
+# plant/validation notes.
+# =============================================================================
+
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 1800.0
+
+dt: 0.01
+t_max: 120.0
+
+initial:
+  h0: 60.0
+
+waves:
+  enabled: true
+  regular: false
+  Hs: 0.22
+  Tp: 1.8
+  gamma: 3.3
+  n: 64
+  seed: 7
+  direction: head
+
+hull:
+  n_surfaces: 2
