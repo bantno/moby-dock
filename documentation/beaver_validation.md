@@ -44,7 +44,9 @@ and state derivative for **V = 35 m/s, n = 1800 RPM, pz = 20 ″Hg**. Evaluating
 
 Every row matches to the printout's own 5-digit precision (forces are O(g), so this is
 ~10⁻⁶ relative). This validates aero + engine + atmosphere + gravity + EOM assembly +
-kinematics end-to-end against an independent published implementation.
+kinematics end-to-end against an independent published implementation. The check also
+*discriminates*: with the wrong (2000 ft) atmosphere the same rows miss by 3–5 orders
+of magnitude — see `figures/beaver_validation_checkcase.png`.
 
 **Two reference-condition discoveries** (both matter if anyone re-derives oracles):
 
@@ -85,11 +87,19 @@ own convergence tolerance, not model error: FDC's fmins stopped with a β̇ resi
 zero of its own equations; our Newton drives all six residuals to ~1e−14 on the same
 model.
 
-The level-flight trim sweep (V = 30…60 m/s) tracks the manual's fig. 10.13
-trimmed-flight elevator curve through every digitized point within the ±0.5° reading
-uncertainty, with the ACTRIM star exactly on the curve — see
-`results/beaver_validation.png`. The trim power bucket (~99 kW minimum near 33 m/s,
-rising both ways) is consistent with the real aircraft.
+The manual's fig. 10.13 elevator curve was **pixel-digitized** from a 400-dpi render
+(frame-calibrated axes; `data/fdc_fig1013_solid_digitized.csv`) rather than read by
+eye. The figure's exact conditions are unstated ("low power"), but a **fixed
+pz = 20 ″Hg** wings-level trim (γ free — apparently TRIMDEMO's constraint style, and
+the ACTRIM default power) reproduces the digitized solid curve's shape with a uniform
+~0.3° offset over the whole 32–60 m/s range — inside the scan/digitization/unknown-
+condition uncertainty — while the exact-condition ACTRIM point is matched to 0.0004°.
+Our level-flight trim curve lies just above (more power → more nose-up trim via
+Cm_dpt), the published high-power dotted curve above that: the ordering and spacing
+are exactly the model's power sensitivity. See `figures/beaver_validation.png` and
+the side-by-side against the actual scan, `figures/beaver_validation_fig1013_sidebyside.png`.
+The trim power bucket (~99 kW minimum near 33 m/s, rising both ways) is consistent
+with the real aircraft.
 
 ### 4. Derivative level — independent cross-implementation of the modes
 
@@ -131,7 +141,12 @@ feedback and the aircraft rolls inverted in ~6 s. Feedforwards now include the
 
 Control activity is quiet everywhere (calm-case elevator increments ~2 µrad/step, V
 held to ±3 mm/s); α stays ≥5° below stall and V inside the validated band in all
-non-POH cases. Per-case plots: `results/beaver_<case>.png`.
+non-POH cases. Per-case plots: `figures/beaver_<case>.png`.
+
+**Logging note:** the sim CSV is written at 10 significant digits. At the C++ default
+6, a 40 m/s airspeed quantizes to 0.1 mm/s steps, which rendered the (genuinely
+±3 mm/s-tight) airspeed channel as a staircase on autoscaled plots — a logging
+artifact, not dynamics.
 
 **Scenario-design note:** clean-configuration 35 m/s trims at α ≈ 12.9°, only ~3°
 below stall — that is why the standard cases fly 40 m/s clean (α ≈ 9.7°) and the

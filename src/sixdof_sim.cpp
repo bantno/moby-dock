@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -276,6 +277,9 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
   double x_pos = 0.0;
 
   std::ofstream csv(csv_path);
+  // 10 significant digits: at the default 6, a 40 m/s airspeed quantizes to
+  // 0.1 mm/s steps, which renders as a staircase on tightly-held channels.
+  csv << std::setprecision(10);
   csv << "t,x,y,h,u,v,w,V_air,alpha_deg,beta_deg,p,q,r,"
          "phi_deg,theta_deg,psi_deg,gamma_deg,sink,"
          "de,da,dr,dT,theta_cmd_deg,phi_cmd_deg,"

@@ -65,6 +65,13 @@ the POH float configuration (flaps 35°, 33.5 m/s, θ_trim 0.2°) is its own cas
 (+5: check-case oracle, trim recovery, cruise modes, wind coupling, closed-loop calm landing).
 **Why:** paper_readiness §6 — validate the flight-validated plant is implemented correctly before
 moving the CBF machinery onto it.
+**Addendum (same session):** fig. 10.13's solid curve was PIXEL-DIGITIZED from a 400-dpi render
+(`data/fdc_fig1013_solid_digitized.csv`) and identified as a fixed-pz≈20 "Hg trim (γ free): our
+fixed-pz curve reproduces it with a uniform ~0.3° offset while the exact-condition ACTRIM point
+matches to 0.0004°. New verification figures: `figures/beaver_validation_checkcase.png` (oracle
+match + wrong-atmosphere discrimination + trim recovery) and `_fig1013_sidebyside.png` (scan vs
+model). Sim CSV precision raised to 10 sig. digits — the default 6 quantized a 40 m/s airspeed
+to 0.1 mm/s steps, rendering the tightly-held V channel as a staircase on autoscaled plots.
 **Follow-ups / notes for collaborator:** two reference-condition traps documented in
 beaver_validation.md: the ACTRIM check case is at the SEA-LEVEL atmosphere (the 2000 ft prompt
 seeds only the sim IC), and FDC eq. 3.15's altitude correction multiplies only the (408−0.0965n)
