@@ -51,6 +51,22 @@ Optional per item: `(owner)` and a one-line note.
 
 ## Modeling / data
 
+- [ ] **CBF onto the Beaver plant.** The 6-DOF Beaver runs nominal-only; port/re-tune the lon
+      CBF stack (beaver_lon.hpp exists) and bound `u_P` to the real engine spool rate. The
+      plant itself is validated (documentation/beaver_validation.md).
+- [ ] **Flare + decrab on the Beaver.** All landing cases touch down at V_app on the glideslope;
+      realistic touchdown (~20-22 m/s) needs a flare, which extrapolates below the LR-556
+      30/35-55 m/s band — a stated limitation to design around.
+- [ ] **Beaver engine altitude term unvalidated numerically.** The (1 − ρ/ρ0) correction in FDC
+      eq. 3.15 is exactly zero at sea level, where the only external oracle lives; bracket
+      reading fixed by reductio. Fine for water landings; validate before any high-altitude use.
+- [ ] **Turbulence/noise/lag for realistic dispersions.** Calm-case V holds to mm/s because the
+      sim is disturbance- and noise-free with exact-trim ICs (idealized actuators/estimation is
+      a stated limitation). Add continuous Dryden/von Kármán turbulence, sensor noise, and
+      engine/servo lag before touchdown-dispersion statistics mean anything.
+- [ ] **Beaver throttle map extrapolates above pz_max.** Trim solves can return pz > 26 "Hg
+      (e.g. the 45° turn at 40 m/s, level flight at 60 m/s); harmless for validation sweeps but
+      clamp/flag it before closed-loop cases can command it.
 - [x] **True longitudinal trim (for the IC).** `lonTrim()` Newton-solves the lon EOM for a steady
       **level-flight** initial condition (`γ=0`, `V̇=γ̇=q̇=0`) — `src/lon_sim.cpp`. Note: this
       revealed the residual descent-`psi < 0` is **not** the IC (it persists, unchanged) — it is a

@@ -79,28 +79,37 @@ python3 scripts/plot_wave_landing.py results/lon_waves_lake.csv figures/lon_land
 
 ## Run the 6-DOF straight-in landing sim
 
-`sixdof_autoland_sim` closes the **full nonlinear body-axis 6-DOF EOM** (`Dynamics::xdot`)
+`sixdof_autoland_sim` closes a **full nonlinear body-axis 6-DOF plant**
 with a cascaded-PID nominal (successive loop closure, Beard & McLain 2012): airspeed → throttle,
 γ → θ → elevator (with a speed → path reference shift — a one-line TECS — that keeps the speed
 axis stable whenever the throttle rails at idle), cross-track → bank → aileron, yaw damper. No CBF filter and no flare/decrab yet — a straight-in
 approach to touchdown at `h = eta(x, t)`, crabbing into any crosswind. Wind (now with a lateral
 gust axis) and waves are the same plant-side models as the lon sim, each toggled by one
-`enabled:` line in the scenario:
+`enabled:` line in the scenario.
+
+The scenario's `plant:` key selects the airframe (see `sixdof_sim.hpp`):
+
+* **`beaver` (default)** — the flight-validated **DHC-2 Beaver** (Tjee & Mulder LR-556 /
+  Rauw's FDC 1.2), evaluated directly from the published polynomials
+  (`beaver_dynamics.hpp`). Implementation validated at five levels against the FDC
+  references, including full-envelope 6-DOF — see `documentation/beaver_validation.md`.
+* **`vspaero`** — the original AHAB VSPAERO table plant (`Dynamics::xdot`); its default deck
+  is `AHAB_combined_betasym.stab` (full ±20° sideslip grid, so crosswind sideslip never
+  leaves the table).
 
 ```bash
-./build/sixdof_autoland_sim                                   # calm (data/sixdof_scenario.yaml)
+./build/sixdof_autoland_sim                                   # Beaver, calm (data/beaver_landing_calm.yaml)
+./build/sixdof_autoland_sim "" "" data/beaver_landing_crosswind.yaml runs/xwind.csv
+./build/sixdof_autoland_sim "" "" data/beaver_landing_poh.yaml runs/poh.csv   # flaps-35 float approach
 ./build/sixdof_autoland_sim data/AHAB_combined_betasym.stab data/aircraft.yaml \
-    data/sixdof_crosswind.yaml runs/xwind.csv                 # steady 3 m/s crosswind
-./build/sixdof_autoland_sim data/AHAB_combined_betasym.stab data/aircraft.yaml \
-    data/sixdof_landing_waves_lake.yaml runs/waves.csv        # JONSWAP lake sea
+    data/sixdof_crosswind.yaml runs/ahab_xwind.csv            # AHAB plant
 
 python3 scripts/plot_sixdof_results.py runs/xwind.csv figures/sixdof_xwind.png
 ```
 
-The default deck is `AHAB_combined_betasym.stab` — the full ±20° sideslip grid, so crosswind
-sideslip never leaves the table. The wind-aware EOM keeps the state velocities inertial and
+The wind-aware EOM keeps the state velocities inertial and
 feeds the aerodynamics the air-relative velocity, so wind-off runs are bit-identical to the
-original `xdot(x, u)`.
+still-air `xdot(x, u)` (both plants).
 
 > A separate legacy body-axis sim (`autoland_sim`, `src/sim.cpp`) exists as an older
 > design sandbox (linear plant, no wind/waves) and is **not** part of the CBF or 6-DOF
@@ -110,8 +119,11 @@ original `xdot(x, u)`.
 
 ```
 aero_table   VSPAero .stab parser + (alpha,beta,Mach) trilinear interpolation
-dynamics     ONE nonlinear 6-DOF EOM  Dynamics::xdot(x,u)  <-- single source of truth
-trim         Newton solve on xdot for steady descent
+dynamics     nonlinear 6-DOF EOM on the VSPAERO table  Dynamics::xdot(x,u)
+beaver_dyn   nonlinear 6-DOF EOM on the validated DHC-2 Beaver polynomials
+             (direct evaluation, exact autodiff trim/linearization) -- the
+             DEFAULT 6-DOF landing plant; see documentation/beaver_validation.md
+trim         Newton solve on xdot for steady descent (beaverTrim: 6-axis)
 linear_model central-difference linearization of xdot; split lon/lat sub-models
 mixing       virtual [de,da,dr] -> physical control groups (config-driven)
 controller   cascaded PID, frontside technique (+ flare, decrab)

@@ -1,21 +1,24 @@
 # DHC-2 Beaver 6-DOF plant — implementation validation
 
-**Status (2026-08-26): validated.** The Beaver 6-DOF plant (`beaver_dynamics.hpp`,
-direct evaluation of the verified LR-556/FDC polynomials — no table export) reproduces
-the published FDC 1.2 references at every level we can check, and flies the closed-loop
-6-DOF landing cases inside the model's validity band.
+**Status (2026-08-27): validated, including full-envelope 6-DOF.** The Beaver 6-DOF
+plant (`beaver_dynamics.hpp`, direct evaluation of the verified LR-556/FDC polynomials —
+no table export) reproduces the published FDC 1.2 references at every level we can
+check, matches an independent implementation over the whole flight envelope (large
+rates, bank, turning flight — §5), and flies the closed-loop 6-DOF landing cases
+inside the model's validity band.
 
 Reproduce everything with:
 
 ```
 build/beaver_validation results/beaver          # checks 1-3 + linearization dumps
 python3 scripts/validate_beaver_modes.py results/beaver   # check 4 (exits nonzero on fail)
+python3 scripts/validate_beaver_sixdof.py build results    # check 5 (exits nonzero on fail)
 python3 scripts/plot_beaver_validation.py results/beaver results/beaver_validation.png
 build/sixdof_autoland_sim "" "" data/beaver_landing_<case>.yaml results/beaver_<case>.csv
 ```
 
-Unit-test versions of checks 1, 2, 3 and the calm landing live in
-`test/test_beaver_dynamics.cpp` (5 tests, part of the 76-test suite).
+Unit-test versions of checks 1, 2, 3, the 30° turn equilibrium (check 5), and the
+calm landing live in `test/test_beaver_dynamics.cpp` (part of the 77-test suite).
 
 ## The four validation levels
 

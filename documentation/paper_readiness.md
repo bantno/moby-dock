@@ -191,3 +191,11 @@ same Beaver aero, so the plant/model gap is characterizable.
 **Effort:** multi-week — key the Beaver aero into our table format, verify trim/handling against
 the published model, build the CBF's reduced Beaver model, re-tune. High value: converts the
 project's biggest weakness into its cleanest strength.
+
+**Status (2026-08-27): plant milestone DONE.** The Beaver is wired as the default 6-DOF landing
+plant — by **direct polynomial evaluation**, not the table export sketched above (decided
+2026-08-26: exact, no interpolation confound) — and its implementation is validated against the
+FDC 1.2 references at five levels (external check-case oracle, trim recovery, fig. 10.13 trim
+curve, independent-implementation modes, full-envelope 6-DOF incl. turning flight), plus five
+closed-loop landing cases. See `documentation/beaver_validation.md`. Still open from this section:
+the CBF's reduced Beaver model in the 6-DOF loop + re-tune (backlogged in TODO.md).
