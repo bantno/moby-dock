@@ -93,6 +93,112 @@ JointState rk4WindStep(const SixDofSim::PlantFn& plant,
   return {x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4),
           xg + (dt / 6.0) * (g1 + 2.0 * g2 + 2.0 * g3 + g4)};
 }
+
+// Exact airspeed rate for the nominal (stands in for the accelerometer-fed
+// airspeed filter of PX4's TECS): V_a = |v_b - W_b| with W_b the gust in body
+// axes, so
+//   Vdot_a = v_a . (vdot_b - Wdot_b) / V_a,   Wdot_b = R_nb^T Wdot_e - omega x W_b
+// (body-resolved rate of an earth-frame vector). vdot_b is the plant xdot
+// under the control held over the LAST step (zero-order hold), i.e. the
+// acceleration the aircraft is actually undergoing when the new command is
+// computed -- no algebraic loop with that command. Wind-off this is v.vdot/|v|.
+double airspeedRate(const StateVec& x, const StateVec& xd, const GustWind& Wg,
+                    const GustWind& Wgdot) {
+  const Eigen::Vector3d Wb = windBody(x, Wg);
+  const Eigen::Vector3d omega(x[P], x[Q], x[R]);
+  const Eigen::Vector3d Wbdot = windBody(x, Wgdot) - omega.cross(Wb);  // linear in W
+  const Eigen::Vector3d va(x[U] - Wb[0], x[V] - Wb[1], x[W] - Wb[2]);
+  const Eigen::Vector3d vadot(xd[U] - Wbdot[0], xd[V] - Wbdot[1], xd[W] - Wbdot[2]);
+  const double Va = std::max(1e-3, va.norm());
+  return va.dot(vadot) / Va;
+}
+
+// Steady wings-level trim at (V, gamma) on whichever plant is active.
+using TrimFn = std::function<TrimResult(double V, double gamma)>;
+
+// Steady-flight gamma at which the trim throttle equals dT_target at airspeed
+// V (NaN if a trim fails or no crossing exists within 40 deg of gamma0). The
+// trim throttle is monotone in gamma, so: march 1 deg from gamma0 until the
+// throttle residual changes sign, then bisect. Pure trim evaluations -- no
+// derivatives.
+double gammaForThrottle(const TrimFn& trimAt, double V, double dT_target,
+                        double gamma0) {
+  auto residual = [&](double gam, bool& ok) {
+    const TrimResult r = trimAt(V, gam);
+    ok = r.converged;
+    return r.u[DT] - dT_target;
+  };
+  bool ok = false;
+  double g0 = gamma0, f0 = residual(g0, ok);
+  if (!ok) return NAN;
+  const double step = (f0 < 0.0) ? kDeg : -kDeg;  // short of throttle -> steeper climb
+  double g1 = g0, f1 = f0;
+  bool bracketed = false;
+  for (int i = 0; i < 40 && !bracketed; ++i) {
+    g1 = g0 + step;
+    f1 = residual(g1, ok);
+    if (!ok) return NAN;
+    if (f0 * f1 <= 0.0) bracketed = true;
+    else { g0 = g1; f0 = f1; }
+  }
+  if (!bracketed) return NAN;
+  for (int i = 0; i < 30; ++i) {
+    const double gm = 0.5 * (g0 + g1);
+    const double fm = residual(gm, ok);
+    if (!ok) return NAN;
+    if (f0 * fm <= 0.0) { g1 = gm; f1 = fm; } else { g0 = gm; f0 = fm; }
+  }
+  return 0.5 * (g0 + g1);
+}
+
+// Fill the TECS vehicle anchors from steady-flight trims on the active plant.
+// PX4 takes these as parameters (FW_THR_TRIM, FW_PSP_OFF, FW_T_CLMB_MAX,
+// FW_T_SINK_MIN, FW_T_SINK_MAX) scaled by a performance model; here they are
+// the plant's own equilibria, so the throttle feedforward's three anchors
+// (dT_min -> -min_sink_rate, throttle_trim -> level, dT_max -> max_climb_rate)
+// are exact and the pitch offset is the level-flight theta at V_ref:
+//   throttle_trim, pitch_offset : level trim at V_ref
+//   max_climb_rate              : steady climb at dT_max, V_ref
+//   min_sink_rate               : steady sink at dT_min, V_ref
+//   max_sink_rate               : steady sink at dT_min, tas_max (demand limit)
+// Any anchor that cannot be solved keeps its PX4 default, with a warning.
+void deriveTecsAnchors(const TrimFn& trimAt, SixDofNominalConfig& nom,
+                       double gamma_app) {
+  px4::TecsParam& tp = nom.tecs;
+  const double V = nom.V_ref;
+  const SurfaceLimits& L = nom.limits;
+  auto warn = [](const std::string& what) {
+    std::cerr << "[sixdof_sim] warning: TECS anchor '" << what
+              << "' not derivable from the plant; keeping the default\n";
+  };
+
+  const TrimResult level = trimAt(V, 0.0);
+  if (level.converged) {
+    tp.throttle_trim = std::clamp(level.u[DT], L.dT_min, L.dT_max);
+    nom.tecs_pitch_offset = level.theta;
+  } else {
+    warn("throttle_trim / pitch_offset (level trim)");
+    nom.tecs_pitch_offset = nom.theta_trim;
+  }
+
+  const double g_climb = gammaForThrottle(trimAt, V, L.dT_max, gamma_app);
+  if (std::isfinite(g_climb) && V * std::sin(g_climb) > 0.0)
+    tp.max_climb_rate = V * std::sin(g_climb);
+  else
+    warn("max_climb_rate (full-throttle climb)");
+
+  const double g_sink = gammaForThrottle(trimAt, V, L.dT_min, gamma_app);
+  if (std::isfinite(g_sink) && -V * std::sin(g_sink) > 0.0)
+    tp.min_sink_rate = -V * std::sin(g_sink);
+  else
+    warn("min_sink_rate (idle sink at V_ref)");
+
+  const double g_sink_fast = gammaForThrottle(trimAt, tp.tas_max, L.dT_min, gamma_app);
+  if (std::isfinite(g_sink_fast) && -tp.tas_max * std::sin(g_sink_fast) > 0.0)
+    tp.max_sink_rate = -tp.tas_max * std::sin(g_sink_fast);
+  else
+    warn("max_sink_rate (idle sink at tas_max)");
+}
 }  // namespace
 
 SixDofSim::SixDofSim(const std::string& stab_path,
@@ -145,6 +251,33 @@ SixDofSim::SixDofSim(const std::string& stab_path,
     nom.Kp_phi = 2.0; nom.Kp_p = 0.8; nom.Kr = 0.5;
     // Standard Delft/FDC deflection signs (Cm_de, Cl_da, Cn_dr all < 0).
     nom.de_sign = -1.0; nom.da_sign = -1.0; nom.dr_sign = -1.0;
+    // TECS airspeed demand band = the LR-556 validity band (underspeed
+    // mitigation ramps in below tas_min - 0.15 V_ref; px4_tecs.hpp).
+    nom.tecs.tas_min = 30.0; nom.tecs.tas_max = 55.0;
+    // TECS gains tuned for the Beaver (scripts/tune_tecs.py; protocol and
+    // tables in documentation/px4_tecs_port.md). Three of PX4's flown
+    // defaults change, the rest stay upstream:
+    //   FW_T_PTCH_DAMP  0.1 -> 1.0   pitch damping is exactly a pitch-per-
+    //                                gamma gain (d theta = damp * d hdot / V);
+    //                                0.1 leaves the SEB loop integrator-
+    //                                dominated and ringing (~15 s). 1.0-1.5 is
+    //                                a flat optimum; the cascade's hand-tuned
+    //                                Kp_gamma is 1.5.
+    //   FW_T_I_GAIN_PIT 0.1 -> 0.4   pitch-rate-per-gamma integral gain;
+    //                                optimum 0.4 (degrades above 0.8); the
+    //                                cascade's Ki_gamma is 0.3.
+    //   FW_T_THR_INTEG  0.02 -> 0.3  at 0.02 the linear-about-trim throttle
+    //                                map's ~0.05 under-prediction of the
+    //                                approach throttle takes ~100 s to trim
+    //                                out (5% steep touchdown); flat 0.3..1.0.
+    // Picked from the flat region of a 2-pass grid on four longitudinal
+    // training cases, then confirmed on seven held-out cases (POH flaps-35
+    // config, gusts, crosswind, long/steep/fast approaches) -- every case
+    // improves vs the PX4 defaults. FW_T_THR_DAMPING (0.05) is insensitive
+    // (0.2..1.0 gains 1% on validation) and stays at the PX4 default.
+    nom.tecs.pitch_damping_gain = 1.0;
+    nom.tecs.integrator_gain_pitch = 0.4;
+    nom.tecs.integrator_gain_throttle = 0.3;
   } else {
     // --- AHAB VSPAERO-table plant (original path). --------------------------
     table_ = std::make_unique<AeroTable>(AeroTable::fromFile(stab_path));
@@ -155,6 +288,7 @@ SixDofSim::SixDofSim(const std::string& stab_path,
                     const Eigen::Vector3d& W) { return dyn_->xdot(x, u, W); };
     sc_.V_app = 18.0;
     sc_.gamma_app = -3.0 * kDeg;
+    nom.tecs.tas_min = 12.0; nom.tecs.tas_max = 25.0;  // placeholder band
   }
 
   sc_.V_app = getOr(root, "V_app", sc_.V_app);
@@ -199,6 +333,59 @@ SixDofSim::SixDofSim(const std::string& stab_path,
   nom.Kp_phi = getOr(yn, "Kp_phi", nom.Kp_phi);
   nom.Kp_p = getOr(yn, "Kp_p", nom.Kp_p);
   nom.Kr = getOr(yn, "Kr", nom.Kr);
+
+  // --- Longitudinal outer loop: cascaded PID (default) or the PX4 TECS port.
+  if (yn && yn["type"]) {
+    const std::string type = yn["type"].as<std::string>();
+    if (type == "tecs") nom.lon_mode = LonMode::Tecs;
+    else if (type != "cascade")
+      throw std::runtime_error("sixdof_sim: unknown nominal.type '" + type + "'");
+  }
+  if (nom.lon_mode == LonMode::Tecs) {
+    px4::TecsParam& tp = nom.tecs;
+    YAML::Node yt = root["tecs"];
+    // Vehicle limits from the nominal/aircraft config (PX4: FW_AIRSPD_TRIM,
+    // FW_THR_MIN/MAX, FW_P_LIM_MIN/MAX - FW_PSP_OFF, FW_AIRSPD_MIN/MAX).
+    tp.equivalent_airspeed_trim = nom.V_ref;
+    tp.throttle_min = nom.limits.dT_min;
+    tp.throttle_max = nom.limits.dT_max;
+    tp.pitch_max = nom.theta_cmd_max;
+    tp.pitch_min = -nom.theta_cmd_max;
+    tp.tas_min = getOr(yt, "tas_min", tp.tas_min);
+    tp.tas_max = getOr(yt, "tas_max", tp.tas_max);
+    tp.pitch_max = getOr(yt, "pitch_max_deg", tp.pitch_max / kDeg) * kDeg;
+    tp.pitch_min = getOr(yt, "pitch_min_deg", tp.pitch_min / kDeg) * kDeg;
+    // Plant-derived anchors (level trim, full-throttle climb, idle sink).
+    const TrimFn trimAt = [this, beaver](double V, double gam) {
+      return beaver ? beaverTrim(*bdyn_, V, gam) : trim(*dyn_, V, gam);
+    };
+    deriveTecsAnchors(trimAt, nom, sc_.gamma_app);
+    // YAML overrides. Keys are the PX4 parameter names, lower-case, without
+    // the FW_T_ / FW_ prefix; time constants as in PX4 (gain = 1 / max(tc, 0.1)).
+    tp.throttle_trim = getOr(yt, "thr_trim", tp.throttle_trim);
+    nom.tecs_pitch_offset =
+        getOr(yt, "pitch_offset_deg", nom.tecs_pitch_offset / kDeg) * kDeg;
+    tp.max_climb_rate = getOr(yt, "clmb_max", tp.max_climb_rate);
+    tp.min_sink_rate = getOr(yt, "sink_min", tp.min_sink_rate);
+    tp.max_sink_rate = getOr(yt, "sink_max", tp.max_sink_rate);
+    tp.vert_accel_limit = getOr(yt, "vert_acc", tp.vert_accel_limit);
+    if (yt && yt["alt_tc"])
+      tp.altitude_error_gain = 1.0 / std::max(yt["alt_tc"].as<double>(), 0.1);
+    tp.altitude_setpoint_gain_ff = getOr(yt, "hrate_ff", tp.altitude_setpoint_gain_ff);
+    if (yt && yt["tas_tc"])
+      tp.airspeed_error_gain = 1.0 / std::max(yt["tas_tc"].as<double>(), 0.1);
+    tp.tas_error_percentage = getOr(yt, "tas_error_percentage", tp.tas_error_percentage);
+    tp.ste_rate_time_const = getOr(yt, "ste_r_tc", tp.ste_rate_time_const);
+    tp.seb_rate_ff = getOr(yt, "seb_r_ff", tp.seb_rate_ff);
+    tp.pitch_speed_weight = getOr(yt, "spdweight", tp.pitch_speed_weight);
+    tp.integrator_gain_pitch = getOr(yt, "i_gain_pit", tp.integrator_gain_pitch);
+    tp.pitch_damping_gain = getOr(yt, "ptch_damp", tp.pitch_damping_gain);
+    tp.integrator_gain_throttle = getOr(yt, "thr_integ", tp.integrator_gain_throttle);
+    tp.throttle_damping_gain = getOr(yt, "thr_damping", tp.throttle_damping_gain);
+    tp.throttle_slewrate = getOr(yt, "thr_slew_max", tp.throttle_slewrate);
+    tp.load_factor_correction = getOr(yt, "rll2thr", tp.load_factor_correction);
+    nom.tecs_detect_underspeed = getOrB(yt, "detect_underspeed", true);
+  }
 
   // --- MIL-F-8785C discrete gust (plant-side, unmeasured). enabled: one-line
   // toggle; all-zero amplitudes are equivalent to off.
@@ -275,6 +462,9 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
   // dynamics, so it is advanced by trapezoid outside the RK4 (cf. lon_sim).
   double x_gust = 0.0;
   double x_pos = 0.0;
+  // Control held over the previous step (ZOH); seeds the exact airspeed-rate
+  // input at t = 0 with the trim command the plant starts under.
+  CtrlVec u_applied = trim_.u;
 
   std::ofstream csv(csv_path);
   // 10 significant digits: at the default 6, a 40 m/s airspeed quantizes to
@@ -283,7 +473,9 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
   csv << "t,x,y,h,u,v,w,V_air,alpha_deg,beta_deg,p,q,r,"
          "phi_deg,theta_deg,psi_deg,gamma_deg,sink,"
          "de,da,dr,dT,theta_cmd_deg,phi_cmd_deg,"
-         "W_u,W_v,W_h,x_gust,eta,eta_slope\n";
+         "W_u,W_v,W_h,x_gust,eta,eta_slope,"
+         "Vdot_air,hdot_sp,ste_rate_sp,ste_rate_est,seb_rate_sp,seb_rate_est,"
+         "tecs_pitch_int,tecs_thr_int\n";
 
   StateVec x = x0_;
   SixDofTouchdown td;
@@ -301,7 +493,14 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
     const double eta_now = wf.eta(x_pos, t);
     const double eta_x = wf.slopeMean(x_pos, t, sc_.waves.contact_len);
 
-    const CtrlVec u = nominal.step(x, ad.V, dt);
+    // Exact airspeed rate under the held control (see airspeedRate).
+    const GustWind Wgdot =
+        gustWindRate(sc_.wind, x_gust, gustXdot(sc_.wind, t, ad.V));
+    const double Vdot_air = airspeedRate(
+        x, plant_(x, u_applied, Eigen::Vector3d(Wg.u, Wg.v, Wg.w)), Wg, Wgdot);
+
+    const CtrlVec u = nominal.step(x, ad.V, Vdot_air, dt);
+    const px4::TecsDebugOutput& tdb = nominal.tecsDebug();
 
     stats_.max_abs_phi = std::max(stats_.max_abs_phi, std::abs(x[PHI]));
     stats_.max_abs_beta = std::max(stats_.max_abs_beta, std::abs(ad.beta));
@@ -316,7 +515,11 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
         << gamma / kDeg << ',' << sink << ',' << u[DE] << ',' << u[DA] << ','
         << u[DR] << ',' << u[DT] << ',' << nominal.thetaCmd() / kDeg << ','
         << nominal.phiCmd() / kDeg << ',' << Wg.u << ',' << Wg.v << ',' << Wg.w
-        << ',' << x_gust << ',' << eta_now << ',' << eta_x << '\n';
+        << ',' << x_gust << ',' << eta_now << ',' << eta_x << ',' << Vdot_air
+        << ',' << nominal.hdotSp() << ',' << tdb.total_energy_rate_sp << ','
+        << tdb.total_energy_rate_estimate << ',' << tdb.energy_balance_rate_sp
+        << ',' << tdb.energy_balance_rate_estimate << ','
+        << tdb.pitch_integrator << ',' << tdb.throttle_integrator << '\n';
 
     if (x[H] <= eta_now && k > 0) {
       td.reached = true;
@@ -356,6 +559,7 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
     x_pos += 0.5 * dt * (gk.xdot_n + groundKinematics(js.x).xdot_n);
     x = js.x;
     x_gust = js.xg;
+    u_applied = u;
     t += dt;
     ++stats_.steps;
   }
@@ -375,6 +579,20 @@ SixDofTouchdown SixDofSim::run(const std::string& csv_path) {
               << " deg";
   std::cout << "  (V_app=" << sc_.V_app << " m/s, gamma_app="
             << sc_.gamma_app / kDeg << " deg)\n";
+  if (sc_.nominal.lon_mode == LonMode::Tecs) {
+    const px4::TecsParam& tp = sc_.nominal.tecs;
+    std::cout << "nominal: PX4 TECS (direct height-rate hdot_sp="
+              << sc_.nominal.V_ref * std::sin(sc_.nominal.gamma_ref)
+              << " m/s, TAS_sp=" << sc_.nominal.V_ref << " m/s)\n"
+              << "  anchors: thr_trim=" << tp.throttle_trim
+              << "  pitch_offset=" << sc_.nominal.tecs_pitch_offset / kDeg
+              << " deg  clmb_max=" << tp.max_climb_rate
+              << " m/s  sink_min=" << tp.min_sink_rate
+              << " m/s  sink_max=" << tp.max_sink_rate << " m/s (at tas_max="
+              << tp.tas_max << ")  tas_min=" << tp.tas_min << "\n";
+  } else {
+    std::cout << "nominal: cascaded PID (gamma -> theta, V -> throttle)\n";
+  }
   if (sc_.wind.enabled) {
     std::cout << "  MIL-F-8785C discrete gust (plant-only, unmeasured): t_start="
               << sc_.wind.t_start << " s  u: " << sc_.wind.u.amp << " m/s/"

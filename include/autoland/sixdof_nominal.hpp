@@ -1,17 +1,35 @@
 #pragma once
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include "autoland/config.hpp"
+#include "autoland/px4_tecs.hpp"
 #include "autoland/types.hpp"
 
 // =============================================================================
-// Cascaded-PID nominal controller for the 6-DOF straight-in approach --
-// successive loop closure (Beard & McLain, "Small Unmanned Aircraft", 2012).
+// Nominal controller for the 6-DOF straight-in approach. Two selectable
+// LONGITUDINAL outer loops (SixDofNominalConfig::lon_mode) feed one shared
+// pitch inner loop; the lateral axes are common.
 //
+// CASCADE (default) -- successive loop closure (Beard & McLain, "Small
+// Unmanned Aircraft", 2012):
 //   Airspeed  : PI on V error -> throttle (frontside technique).
 //   Glidepath : inertial flight-path angle gamma -> theta_cmd (PI, clamped),
 //               mirroring the lon sim's gamma cascade (lon_nominal.hpp).
-//   Pitch     : theta_cmd error + pitch-rate damping -> delta_e (PD).
+//
+// TECS -- the PX4 Total Energy Control System control law (px4_tecs.hpp, a
+// port of PX4-Autopilot TECSControl): total-energy rate -> throttle and
+// energy-balance rate -> pitch. It is given PX4's DIRECT height-rate setpoint
+// hdot_sp = V_ref sin(gamma_ref) and the TAS setpoint V_ref -- the same
+// references the cascade tracks -- so the two nominals differ only in the
+// outer energy loops. Its pitch setpoint is relative to the LEVEL-flight trim
+// pitch (PX4's FW_PSP_OFF; tecs_pitch_offset), and its throttle feedforward
+// is anchored on plant trims (level / full-throttle climb / idle sink at
+// V_ref) that the sim solves at construction (sixdof_sim.cpp). The exact
+// airspeed rate the sim supplies stands in for PX4's airspeed filter.
+//
+// Shared:
+//   Pitch     : theta_cmd error + pitch-rate damping -> delta_e (PID).
 //   Lateral   : cross-track y (+ rate) -> phi_cmd (PD, clamped);
 //               roll inner PD -> delta_a; yaw damper r -> delta_r.
 //
@@ -21,6 +39,8 @@
 // VECTOR stays unmeasured, per the repo's plant-disturbance philosophy.
 // =============================================================================
 namespace autoland {
+
+enum class LonMode { Cascade, Tecs };
 
 struct SixDofNominalConfig {
   double V_ref{18.0};        // approach airspeed [m/s]
@@ -70,6 +90,17 @@ struct SixDofNominalConfig {
   // (Cm_de < 0, Cl_da < 0, Cn_dr < 0), i.e. -1 on all three.
   double de_sign{1.0}, da_sign{1.0}, dr_sign{1.0};
   SurfaceLimits limits;  // deflection + rate limits (aircraft.yaml)
+
+  // --- Longitudinal outer loop: cascade (above) or the PX4 TECS port. -------
+  LonMode lon_mode{LonMode::Cascade};
+  // TECS parameters (PX4 FW_T_* defaults in px4_tecs.hpp). The vehicle
+  // anchors -- throttle_trim, max_climb_rate, min_sink_rate, max_sink_rate,
+  // the pitch/throttle limits and the TAS band -- are filled by the sim from
+  // the plant and the nominal limits; the pitch limits are relative to
+  // tecs_pitch_offset (PX4 FW_P_LIM_MIN/MAX - FW_PSP_OFF).
+  px4::TecsParam tecs;
+  double tecs_pitch_offset{0.0};   // FW_PSP_OFF analog: level-flight trim theta at V_ref [rad]
+  bool tecs_detect_underspeed{true};
 };
 
 class SixDofNominal {
@@ -77,9 +108,10 @@ class SixDofNominal {
   explicit SixDofNominal(const SixDofNominalConfig& cfg) : c_(cfg) {}
 
   // One control step. x is the full (inertial) state; V_air the measured
-  // airspeed. Returns absolute virtual controls [de, da, dr, dT] with the
-  // deflection and rate limits applied.
-  CtrlVec step(const StateVec& x, double V_air, double dt) {
+  // airspeed and Vdot_air its (exact) time derivative -- consumed by the TECS
+  // outer loop only (SKE rate = V Vdot). Returns absolute virtual controls
+  // [de, da, dr, dT] with the deflection and rate limits applied.
+  CtrlVec step(const StateVec& x, double V_air, double Vdot_air, double dt) {
     const double sp = std::sin(x[PHI]), cp = std::cos(x[PHI]);
     const double st = std::sin(x[THETA]), ct = std::cos(x[THETA]);
     const double sy = std::sin(x[PSI]), cy = std::cos(x[PSI]);
@@ -94,27 +126,62 @@ class SixDofNominal {
     const double gamma = std::asin(std::clamp(hdot / Vg, -1.0, 1.0));
 
     CtrlVec u;
+    double dT, theta_cmd;
 
-    // --- Airspeed -> throttle (PI, frontside; anti-windup on the clamp). ---
-    const double eV = c_.V_ref - V_air;
-    V_int_ += eV * dt;
-    double dT = c_.dT_trim + c_.Kp_V * eV + c_.Ki_V * V_int_;
-    if (dT > c_.limits.dT_max) { dT = c_.limits.dT_max; V_int_ -= eV * dt; }
-    else if (dT < c_.limits.dT_min) { dT = c_.limits.dT_min; V_int_ -= eV * dt; }
+    if (c_.lon_mode == LonMode::Tecs) {
+      // --- PX4 TECS: total energy -> throttle, energy balance -> pitch. -----
+      // Direct height-rate setpoint (PX4 altitude_rate_setpoint_direct) and
+      // TAS setpoint. The altitude reference is only consulted by
+      // initialize(), which PX4 seeds with the CURRENT altitude and climb
+      // rate (TECS::initialize -> handle_alt_step semantics) -- mirrored here.
+      px4::TecsParam prm = c_.tecs;
+      // PX4: _load_factor_from_bank_angle = 1 / max(cos(phi), FLT_EPSILON).
+      prm.load_factor = 1.0 / std::max(cp, double(FLT_EPSILON));
+      const double hdot_sp = c_.V_ref * std::sin(c_.gamma_ref);
+      px4::TecsSetpoint tsp;
+      tsp.altitude_reference.alt = x[H];
+      tsp.altitude_reference.alt_rate = hdot;
+      tsp.altitude_rate_setpoint_direct = hdot_sp;
+      tsp.tas_setpoint = c_.V_ref;
+      const px4::TecsInput tin{x[H], hdot, V_air, Vdot_air};
+      const px4::TecsFlag flag{true, c_.tecs_detect_underspeed};
+      if (!tecs_initialized_) {
+        // PX4 runs initialize() (not update()) on the first call. Note
+        // initialize() has no direct-rate path: its demand is the altitude
+        // loop's HRATE_FF * (current climb rate), i.e. half the glideslope
+        // energy rate at trim -- the one-sample throttle/pitch kick at t = 0
+        // in the traces is upstream behaviour, not a port artefact.
+        tecs_.initialize(tsp, tin, prm, flag);
+        tecs_initialized_ = true;
+      } else {
+        tecs_.update(dt, tsp, tin, prm, flag);
+      }
+      dT = tecs_.getThrottleSetpoint();  // already within [dT_min, dT_max]
+      theta_cmd = c_.tecs_pitch_offset + tecs_.getPitchSetpoint();
+      hdot_sp_ = hdot_sp;
+    } else {
+      // --- Airspeed -> throttle (PI, frontside; anti-windup on the clamp). -
+      const double eV = c_.V_ref - V_air;
+      V_int_ += eV * dt;
+      dT = c_.dT_trim + c_.Kp_V * eV + c_.Ki_V * V_int_;
+      if (dT > c_.limits.dT_max) { dT = c_.limits.dT_max; V_int_ -= eV * dt; }
+      else if (dT < c_.limits.dT_min) { dT = c_.limits.dT_min; V_int_ -= eV * dt; }
+
+      // --- Glidepath: speed-shifted gamma reference -> theta_cmd (PI). ------
+      const double gamma_ref_eff =
+          c_.gamma_ref + std::clamp(c_.Kv_gamma * (V_air - c_.V_ref),
+                                    -c_.dgamma_V_max, c_.dgamma_V_max);
+      const double e_gamma = gamma_ref_eff - gamma;
+      gamma_int_ += e_gamma * dt;
+      theta_cmd = c_.theta_trim + c_.Kp_gamma * e_gamma +
+                  c_.Ki_gamma * gamma_int_;
+      const double th_lo = c_.theta_trim - c_.theta_cmd_max;
+      const double th_hi = c_.theta_trim + c_.theta_cmd_max;
+      if (theta_cmd > th_hi) { theta_cmd = th_hi; gamma_int_ -= e_gamma * dt; }
+      else if (theta_cmd < th_lo) { theta_cmd = th_lo; gamma_int_ -= e_gamma * dt; }
+      hdot_sp_ = c_.V_ref * std::sin(gamma_ref_eff);
+    }
     u[DT] = dT;
-
-    // --- Glidepath: speed-shifted gamma reference -> theta_cmd (PI). --------
-    const double gamma_ref_eff =
-        c_.gamma_ref + std::clamp(c_.Kv_gamma * (V_air - c_.V_ref),
-                                  -c_.dgamma_V_max, c_.dgamma_V_max);
-    const double e_gamma = gamma_ref_eff - gamma;
-    gamma_int_ += e_gamma * dt;
-    double theta_cmd = c_.theta_trim + c_.Kp_gamma * e_gamma +
-                       c_.Ki_gamma * gamma_int_;
-    const double th_lo = c_.theta_trim - c_.theta_cmd_max;
-    const double th_hi = c_.theta_trim + c_.theta_cmd_max;
-    if (theta_cmd > th_hi) { theta_cmd = th_hi; gamma_int_ -= e_gamma * dt; }
-    else if (theta_cmd < th_lo) { theta_cmd = th_lo; gamma_int_ -= e_gamma * dt; }
     theta_cmd_ = theta_cmd;
 
     // --- Pitch inner PID -> elevator (anti-windup on the deflection clamp). --
@@ -142,7 +209,17 @@ class SixDofNominal {
 
   double thetaCmd() const { return theta_cmd_; }
   double phiCmd() const { return phi_cmd_; }
-  void reset() { V_int_ = gamma_int_ = theta_int_ = 0.0; have_prev_ = false; }
+  // Height-rate reference [m/s]: the TECS direct setpoint, or for the cascade
+  // the climb rate at V_ref along its (speed-shifted) gamma reference.
+  double hdotSp() const { return hdot_sp_; }
+  bool tecsActive() const { return c_.lon_mode == LonMode::Tecs; }
+  const px4::TecsDebugOutput& tecsDebug() const { return tecs_.getDebugOutput(); }
+  void reset() {
+    V_int_ = gamma_int_ = theta_int_ = 0.0;
+    have_prev_ = false;
+    tecs_ = px4::TecsControl{};
+    tecs_initialized_ = false;
+  }
 
  private:
   // Deflection clamps + surface rate limit against the previously APPLIED
@@ -168,6 +245,9 @@ class SixDofNominal {
   double theta_int_{0.0};
   double theta_cmd_{0.0};
   double phi_cmd_{0.0};
+  double hdot_sp_{0.0};
+  px4::TecsControl tecs_;
+  bool tecs_initialized_{false};
   CtrlVec u_prev_{CtrlVec::Zero()};
   bool have_prev_{false};
 };

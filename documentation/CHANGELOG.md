@@ -39,6 +39,73 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-08-27 — Brian — PX4 TECS tuned for the Beaver with a hold-out protocol
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** Beaver TECS defaults in `sixdof_sim.cpp` are now `ptch_damp 1.0`,
+`i_gain_pit 0.4`, `thr_integ 0.3` (PX4: 0.1 / 0.1 / 0.02); `thr_damping` and every other gain
+stay at the PX4 default. New `scripts/tune_tecs.py` (grid / eval / sens): four longitudinal
+training cases at the design condition, seven **held-out** validation cases (POH flaps-35 at
+33.5 m/s / 2000 RPM calm + hot, downdraft, crosswind, 120 m approach, 45 m/s / −3°, −6°
+throttle-railed), score `IAE(sink) + 0.5 IAE(V) + 0.02 TV(δe)` normalised by the PX4-default
+TECS per case, robust (neighbourhood-worst) pick from a two-pass grid inside PX4's parameter
+ranges, one-at-a-time sensitivity on the rest. Docs/figures/README regenerated.
+**Why:** PX4's flown defaults leave the Beaver 5 % steep at touchdown and ringing ~15 s after a
+hot entry: `PTCH_DAMP 0.1` is 0.1 rad pitch per rad of flight-path error, so the SEB loop is
+integrator-dominated. Tuned: calm settles in 4.4 s (was 17.8), hot entry in 9.3 s (was 23.2;
+cascade 18.7) with max sink 3.2 m/s (was 4.1); every held-out case improves (mean Jrel 0.40,
+worst 0.73), incl. the flaps-35 configuration and the idle-railed approach (no windup).
+**Follow-ups / notes for collaborator:** (1) `ptch_damp 1.0 / i_gain_pit 0.4` are the cascade's
+`Kp_gamma 1.5 / Ki_gamma 0.3` in energy form — two independent routes agreeing is the main
+anti-overfit evidence. (2) Insensitive gains were deliberately NOT moved: `thr_damping` 0.2–1.0
+buys 1 % on validation, `tas_tc 3` 6 % on training. (3) `spdweight 0.5` trades 1 m/s of shear
+sink excursion for airspeed tracking — a landing-design choice, left at 1.0 (TODO). (4) The
+tuned pitch gain multiplies ḣ / V̇ 10× harder than PX4's default; re-check once sensor noise and
+the airspeed filter exist (TODO). (5) TECS beats the cascade outright on the held-out downdraft
+(touchdown sink 2.57 vs 3.11 m/s); the cascade still wins the pure-longitudinal cases in absolute
+terms because its feedforward is the exact approach trim.
+**Files touched:** `src/sixdof_sim.cpp`, `scripts/tune_tecs.py`, `data/beaver_landing_tecs.yaml`,
+`documentation/px4_tecs_port.md`, `README.md`, `TODO.md`, `figures/sixdof_tecs_compare_*.png`,
+`figures/sixdof_beaver_tecs_calm.png`.
+
+## 2026-08-27 — Brian — PX4 TECS ported as a selectable 6-DOF nominal (Beaver)
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** `px4_tecs.hpp/.cpp` — a double-precision port of PX4-Autopilot's `TECSControl`
+(`src/lib/tecs/TECS.{hpp,cpp}`, main @ `a906b728`, fetched from GitHub, not written from memory):
+same function decomposition and names, flown `FW_T_*` parameter defaults. Control law only —
+the uORB wrapper, jerk-limited altitude reference model, airspeed complementary filter,
+fast-descend and airspeed-less modes are dropped (listed in the header). `sixdof_nominal.hpp`
+gains `lon_mode = Cascade | Tecs` (scenario `nominal.type`): TECS replaces the airspeed→throttle
+PI and γ→θ PI; the pitch PID and lateral axes are shared. TECS gets PX4's direct height-rate
+setpoint `V_ref sin γ_ref` + TAS setpoint `V_ref`, the **exact** airspeed rate (plant `xdot`
+under the ZOH-held control, wind terms included — `airspeedRate()` in `sixdof_sim.cpp`), and
+vehicle anchors solved from the plant at construction: level trim at `V_ref` → `throttle_trim`
+(0.832) and pitch offset (8.82°, PX4 `FW_PSP_OFF`), full-throttle climb 1.085 m/s, idle sink
+4.30 m/s, idle sink at `tas_max` 5.84 m/s (bracket-march + bisection on the 6-axis trim's
+throttle — no derivatives). All gains overridable from a `tecs:` block (PX4 names without
+prefix). CSV gains `Vdot_air, hdot_sp, ste_rate_*, seb_rate_*, tecs_*_int`; cascade runs are
+bit-identical on every pre-existing column (verified calm/crosswind/POH). New
+`data/beaver_landing_tecs.yaml`, `scripts/plot_tecs_compare.py`, `test/test_tecs.cpp` (unit
+checks on PX4's own `TECSTest.cpp` fixture numbers + Beaver calm/hot closed loop), figures
+`sixdof_tecs_compare_{calm,hot}.png`, `sixdof_beaver_tecs_calm.png`.
+**Why:** a second, independently designed nominal (the one PX4 flies) for the Beaver, so CBF
+results can be shown not to hinge on the hand-tuned cascade; the port is diffable against upstream.
+**Follow-ups / notes for collaborator:** (1) PX4's flown integrator defaults (`THR_INTEG 0.02`,
+`I_GAIN_PIT 0.1`) leave the Beaver 5 % steep at touchdown (sink 2.57 vs 2.44) — the
+linear-about-trim throttle map under-predicts the −3.5° approach throttle by ~0.05 and they need
+~100 s to close it; the Beaver defaults in `sixdof_sim.cpp` are PX4's test-fixture pair 0.3/0.4
+(calm: sink 2.437, γ −3.49°, V 40.00; 1.0/1.0 overshoots). (2) At PX4's damping defaults the hot
+entry (+3 m/s, +2°) rings ~15 s (sink 1.9–4.1 m/s) yet lands closer to the references than the
+cascade (γ −3.45° vs −3.59°, V 40.07 vs 39.89); `ptch_damp 0.3 / thr_damping 0.2` is one
+data point (TODO). (3) The one-sample throttle/pitch kick at t = 0 is upstream's `initialize()`
+(altitude loop with `HRATE_FF ×` current climb rate; no direct-rate path there). (4) Full-throttle
+climb at 40 m/s is only 1.085 m/s because the scenarios run 1800 RPM / 26 "Hg — the plant's
+engine setting, not a TECS issue. (5) TECS works on the VSPAERO plant too (untested; TAS band
+placeholder). See `documentation/px4_tecs_port.md`.
+**Files touched:** `include/autoland/px4_tecs.hpp`, `src/px4_tecs.cpp`,
+`include/autoland/sixdof_nominal.hpp`, `src/sixdof_sim.cpp`, `data/beaver_landing_tecs.yaml`,
+`scripts/plot_tecs_compare.py`, `scripts/plot_sixdof_results.py`, `test/test_tecs.cpp`,
+`CMakeLists.txt`, `README.md`, `TODO.md`, `documentation/px4_tecs_port.md`, `figures/`.
+
 ## 2026-08-26 — Brian — Beaver 6-DOF plant wired + validated vs FDC references; Beaver landing-case suite
 **Branch/commit:** 6dof
 **What changed:** The DHC-2 Beaver is now a real 6-DOF plant (`beaver_dynamics.hpp/.cpp`) —

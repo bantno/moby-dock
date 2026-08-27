@@ -80,7 +80,8 @@ python3 scripts/plot_wave_landing.py results/lon_waves_lake.csv figures/lon_land
 ## Run the 6-DOF straight-in landing sim
 
 `sixdof_autoland_sim` closes a **full nonlinear body-axis 6-DOF plant**
-with a cascaded-PID nominal (successive loop closure, Beard & McLain 2012): airspeed → throttle,
+with a cascaded-PID nominal (successive loop closure, Beard & McLain 2012 — or, per scenario, the
+**PX4 TECS** port, see below): airspeed → throttle,
 γ → θ → elevator (with a speed → path reference shift — a one-line TECS — that keeps the speed
 axis stable whenever the throttle rails at idle), cross-track → bank → aileron, yaw damper. No CBF filter and no flare/decrab yet — a straight-in
 approach to touchdown at `h = eta(x, t)`, crabbing into any crosswind. Wind (now with a lateral
@@ -107,6 +108,51 @@ The scenario's `plant:` key selects the airframe (see `sixdof_sim.hpp`):
 python3 scripts/plot_sixdof_results.py runs/xwind.csv figures/sixdof_xwind.png
 ```
 
+### Nominal option: PX4 TECS (`nominal.type: tecs`)
+
+`include/autoland/px4_tecs.hpp` / `src/px4_tecs.cpp` is a double-precision port of the
+**PX4 Total Energy Control System** control law — `TECSControl` from PX4-Autopilot
+`src/lib/tecs/TECS.{hpp,cpp}`, main @ `a906b728` — with upstream's function decomposition,
+names, and flown `FW_T_*` parameter defaults, so it can be diffed against the source. Only the
+control law is ported (energy-rate bookkeeping, SEB → pitch and STE → throttle loops with their
+integrators/anti-windup, underspeed handling, slew and vertical-acceleration limits, bank-angle
+drag compensation); the uORB wrapper, jerk-limited altitude reference model, airspeed
+complementary filter, fast-descend and airspeed-less modes are not (see the header).
+
+Selecting `nominal: {type: tecs}` swaps the cascade's two longitudinal outer loops for TECS;
+the pitch PID and the lateral axes are shared, so the two nominals differ **only** in the outer
+energy loops. TECS is fed PX4's direct height-rate setpoint `V_ref sin(γ_ref)` and the TAS
+setpoint `V_ref` (the cascade's own references), the exact airspeed rate from the plant (in
+place of PX4's airspeed filter), and vehicle anchors solved **from the plant at construction**
+rather than taken as parameters: level-flight throttle and pitch at `V_ref` (PX4 `FW_THR_TRIM`
+/ `FW_PSP_OFF`), the full-throttle climb rate and idle sink rate at `V_ref` (`FW_T_CLMB_MAX` /
+`FW_T_SINK_MIN`), and the idle sink at `tas_max` (`FW_T_SINK_MAX`). The run header prints them.
+Every gain is overridable from a `tecs:` block (keys = PX4 parameter names without the prefix;
+`data/beaver_landing_tecs.yaml` lists them all).
+
+```bash
+./build/sixdof_autoland_sim "" "" data/beaver_landing_tecs.yaml runs/tecs.csv
+python3 scripts/plot_sixdof_results.py runs/tecs.csv figures/tecs.png          # TECS channels in the CSV
+python3 scripts/plot_tecs_compare.py runs/calm.csv runs/tecs.csv figures/cmp.png  # overlay vs the cascade
+```
+
+Three gains are tuned for the Beaver (`sixdof_sim.cpp` defaults): `ptch_damp 0.1 → 1.0`,
+`i_gain_pit 0.1 → 0.4`, `thr_integ 0.02 → 0.3`; everything else is the PX4 default. They come from
+`scripts/tune_tecs.py` — a coarse grid on four longitudinal training cases, confirmed on seven
+**held-out** cases (flaps-35 POH configuration, gusts, crosswind, long / steep / fast approaches),
+with the pick taken from the flat region and insensitive gains left at upstream values. With
+them the calm approach touches down at sink 2.443 m/s / γ −3.50° / V 40.01 (nominal 2.442 /
+−3.5 / 40) and a hot entry settles in 9 s; PX4's flown defaults leave the Beaver 5 % steep and
+ringing for 15 s. `figures/sixdof_tecs_compare_{calm,hot}.png` overlay both nominals; see
+`documentation/px4_tecs_port.md` for the parameter mapping, the tuning tables and what was
+left out.
+
+```bash
+python3 scripts/tune_tecs.py grid          # training grid (~1000 runs, ~40 s on 16 cores)
+python3 scripts/tune_tecs.py eval          # PX4 defaults vs tuned on training + validation cases
+python3 scripts/tune_tecs.py sens --gains "ptch_damp=1,i_gain_pit=0.4,thr_damping=0.05,thr_integ=0.3"
+```
+
 The wind-aware EOM keeps the state velocities inertial and
 feeds the aerodynamics the air-relative velocity, so wind-off runs are bit-identical to the
 still-air `xdot(x, u)` (both plants).
@@ -130,8 +176,11 @@ controller   cascaded PID, frontside technique (+ flare, decrab)
 cbf          CBF safety-filter interface; pass-through stub (OSQP later)
 sim          load -> trim -> linearize -> closed loop to touchdown -> CSV
 config       aircraft.yaml / scenario.yaml loaders
-sixdof_sim   6-DOF closed loop on the NONLINEAR EOM: trim -> cascaded-PID
-             nominal (sixdof_nominal) -> RK4 with wind/waves -> touchdown
+sixdof_sim   6-DOF closed loop on the NONLINEAR EOM: trim -> nominal
+             (sixdof_nominal: cascaded PID, or the PX4 TECS port in
+             px4_tecs) -> RK4 with wind/waves -> touchdown
+px4_tecs     PX4 TECSControl (total-energy control law) ported from
+             PX4-Autopilot main @ a906b728 -- optional 6-DOF nominal
 ```
 
 The trim solver and the linear model **both derive from `Dynamics::xdot`** — the

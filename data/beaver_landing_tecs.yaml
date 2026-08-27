@@ -1,0 +1,67 @@
+# =============================================================================
+# DHC-2 Beaver 6-DOF straight-in water landing, calm conditions, flown by the
+# PX4 TECS nominal (nominal.type: tecs) instead of the cascaded PID. Identical
+# plant, approach condition, and lateral loops to beaver_landing_calm.yaml;
+# only the longitudinal outer loops differ (px4_tecs.hpp -- a port of the
+# PX4-Autopilot TECSControl law, main @ a906b728).
+#
+# TECS references: direct height-rate hdot_sp = V_app sin(gamma_app) and TAS
+# setpoint V_app. Its throttle feedforward anchors (level-flight throttle_trim,
+# full-throttle climb rate, idle sink rate) and the pitch offset (level-flight
+# trim theta, PX4 FW_PSP_OFF) are solved from the plant at construction; the
+# printed run header lists them. Every key of the `tecs:` block below is
+# optional -- the defaults are the flown PX4 parameter defaults (see
+# px4_tecs.hpp) except three gains that sixdof_sim.cpp sets to the Beaver-
+# tuned values (scripts/tune_tecs.py, documentation/px4_tecs_port.md); the
+# block is listed here as documentation, values commented.
+# =============================================================================
+
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 1800.0
+  pz_idle: 5.0
+  pz_max: 26.0
+  flap_deg: 0.0
+
+dt: 0.01
+t_max: 120.0
+
+initial:
+  h0: 60.0
+
+nominal:
+  type: tecs          # cascade (default) | tecs
+
+tecs:
+  # --- vehicle anchors: plant-derived unless set here ---
+  # thr_trim: 0.55          # FW_THR_TRIM  level-flight throttle at V_app
+  # pitch_offset_deg: 9.7   # FW_PSP_OFF   level-flight trim pitch at V_app
+  # clmb_max: 4.0           # FW_T_CLMB_MAX [m/s] full-throttle climb at V_app
+  # sink_min: 4.0           # FW_T_SINK_MIN [m/s] idle sink at V_app
+  # sink_max: 6.0           # FW_T_SINK_MAX [m/s] idle sink at tas_max
+  # tas_min: 30.0           # FW_AIRSPD_MIN  (Beaver default: LR-556 band)
+  # tas_max: 55.0           # FW_AIRSPD_MAX
+  # pitch_max_deg:  10.0    # FW_P_LIM_MAX - FW_PSP_OFF (default: theta_cmd_max)
+  # pitch_min_deg: -10.0    # FW_P_LIM_MIN - FW_PSP_OFF
+  # --- control law (PX4 defaults) ---
+  # alt_tc: 5.0             # FW_T_ALT_TC   [s] (altitude loop; unused with the direct rate)
+  # hrate_ff: 0.5           # FW_T_HRATE_FF
+  # tas_tc: 5.0             # FW_T_TAS_TC   [s]
+  # spdweight: 1.0          # FW_T_SPDWEIGHT 0 = height only .. 2 = speed only
+  # ptch_damp: 1.0          # FW_T_PTCH_DAMP   (PX4 default 0.1;  Beaver-tuned 1.0 -- see sixdof_sim.cpp)
+  # i_gain_pit: 0.4         # FW_T_I_GAIN_PIT  (PX4 default 0.1;  Beaver-tuned 0.4)
+  # thr_damping: 0.05       # FW_T_THR_DAMPING
+  # thr_integ: 0.3          # FW_T_THR_INTEG   (PX4 default 0.02; Beaver-tuned 0.3)
+  # thr_slew_max: 0.0       # FW_THR_SLEW_MAX [1/s] (0 = off)
+  # vert_acc: 7.0           # FW_T_VERT_ACC [m/s^2] -> pitch-rate limit
+  # rll2thr: 15.0           # FW_T_RLL2THR
+  # ste_r_tc: 0.4           # FW_T_STE_R_TC [s]
+  # seb_r_ff: 1.0           # FW_T_SEB_R_FF
+  # detect_underspeed: true
+
+# Twin-float airframe: TN 1516 single-surface theory applied per float at W/2.
+hull:
+  n_surfaces: 2

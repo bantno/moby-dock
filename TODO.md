@@ -49,6 +49,31 @@ Optional per item: `(owner)` and a one-line note.
       would silently *absorb* an authority shortfall rather than enforce the load limit. Thrust
       (the actuator that could add flare energy) is excluded by the degree-2 construction.
 
+## Nominal controllers
+
+- [ ] **TECS glideslope-altitude mode.** The port drives PX4's direct height-rate path
+      (`hdot_sp = V_ref sin γ_ref`); the altitude loop (`FW_T_ALT_TC`, `FW_T_HRATE_FF`) is ported
+      but unused. Add an `h_sp(x)` glideslope (needs a downrange origin in the scenario) to
+      exercise it.
+- [ ] **TECS airspeed-filter option.** The sim feeds the exact airspeed rate; PX4 flies a 2-state
+      fixed-gain complementary filter (`TECSAirspeedFilter`, gains in TECS.hpp) with the
+      acceleration input zeroed. Port it as `tecs.airspeed_rate: filter` before any sensor-noise
+      dispersion study.
+- [x] **TECS gains for the Beaver** — `scripts/tune_tecs.py`, hold-out protocol; result
+      `ptch_damp 1.0 / i_gain_pit 0.4 / thr_integ 0.3` (documentation/px4_tecs_port.md).
+- [ ] **TECS `spdweight` for water landing.** Left at PX4's 1.0 (equal priority). 0.5 (height
+      priority) cuts the tailwind-shear sink excursion 5.6 → 4.6 m/s at the cost of airspeed
+      tracking; decide with the impact barrier in the loop, not by the tracking score.
+- [ ] **TECS with sensor noise / the airspeed filter.** `ptch_damp 1.0` multiplies ḣ and V̇ ten
+      times harder than PX4's default; re-check the tuned set once the airspeed filter and
+      noise are in (above) — the sim-side V̇ is exact today. `tas_tc 3` gains a further 6 % on
+      the training score and was left at 5 for the same reason.
+- [ ] **Flare with TECS.** PX4 flares by handing TECS a height-rate setpoint + min throttle; the
+      direct-rate interface is already in place, so the Beaver flare item below can be built on
+      either nominal.
+- [ ] **TECS on the VSPAERO plant.** Wired (anchors via `trim()`), TAS band placeholder 12–25 m/s,
+      untested.
+
 ## Modeling / data
 
 - [ ] **CBF onto the Beaver plant.** The 6-DOF Beaver runs nominal-only; port/re-tune the lon

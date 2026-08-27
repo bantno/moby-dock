@@ -20,7 +20,8 @@ d = np.genfromtxt(csv, delimiter=",", names=True)
 t = d["t"]
 
 fig, ax = plt.subplots(3, 3, figsize=(16, 10))
-fig.suptitle("6-DOF straight-in water landing (cascaded-PID nominal)",
+nominal = "PX4 TECS nominal" if np.any(d["ste_rate_sp"] != 0.0) else "cascaded-PID nominal"
+fig.suptitle(f"6-DOF straight-in water landing ({nominal})",
              fontsize=14, weight="bold")
 
 # (1) Descent profile with the instantaneous wave surface under the keel.
@@ -36,6 +37,8 @@ ax[0, 0].legend(fontsize=8)
 ax[0, 1].plot(t, d["V_air"], color="tab:green", label="V_air")
 ax2 = ax[0, 1].twinx()
 ax2.plot(t, d["sink"], color="tab:red", lw=0.9, label="sink")
+if "hdot_sp" in d.dtype.names:
+    ax2.plot(t, -d["hdot_sp"], color="tab:red", lw=0.8, ls="--", label="sink ref")
 ax2.set_ylabel("sink [m/s] (down +)", color="tab:red")
 ax[0, 1].set_ylabel("V_air [m/s]", color="tab:green")
 ax[0, 1].set_title("Airspeed / sink rate")
