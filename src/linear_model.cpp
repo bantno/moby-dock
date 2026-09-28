@@ -11,7 +11,7 @@ StateVec stateSteps() {
   s[U] = s[V] = s[W] = 1e-5;        // m/s
   s[P] = s[Q] = s[R] = 1e-6;        // rad/s
   s[PHI] = s[THETA] = s[PSI] = 1e-6;  // rad
-  s[H] = s[Y] = 1e-4;               // m
+  s[H] = s[Y] = s[XN] = 1e-4;       // m
   return s;
 }
 

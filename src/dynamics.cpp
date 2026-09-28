@@ -178,12 +178,15 @@ StateVec Dynamics::xdot(const StateVec& x, const CtrlVec& u,
   // Cross-track (east) velocity:
   const double ydot = ub * ct * sps + vb * (sp * st * sps + cp * cps) +
                       wb * (cp * st * sps - sp * cps);
+  // North velocity (first row of the body->earth DCM):
+  const double ndot = ub * ct * cps + vb * (sp * st * cps - cp * sps) +
+                      wb * (cp * st * cps + sp * sps);
 
   StateVec xd;
   xd[U] = udot;   xd[V] = vdot;   xd[W] = wdot;
   xd[P] = pdot;   xd[Q] = qdot;   xd[R] = rdot;
   xd[PHI] = phidot; xd[THETA] = thetadot; xd[PSI] = psidot;
-  xd[H] = hdot;   xd[Y] = ydot;
+  xd[H] = hdot;   xd[Y] = ydot;   xd[XN] = ndot;
   return xd;
 }
 

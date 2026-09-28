@@ -61,7 +61,13 @@ TEST_CASE("linear model reproduces the nonlinear EOM to first order",
   StateVec xp = tr.x + dx;
   StateVec lin = m.xdot(xp, tr.u);
   StateVec non = dyn.xdot(xp, tr.u);
-  CHECK((lin - non).norm() < 1e-3);
+  // The north row's second-order term (V/2 * dtheta^2 ~ 0.9e-3 at 18 m/s)
+  // is of the same size as the dynamic rows' residual; check it separately.
+  StateVec err = lin - non;
+  const double err_xn = err[XN];
+  err[XN] = 0.0;
+  CHECK(err.norm() < 1e-3);
+  CHECK(std::abs(err_xn) < 2e-3);
 }
 
 TEST_CASE("longitudinal sub-model shows static + control sign sense",

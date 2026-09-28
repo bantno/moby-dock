@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <Eigen/Dense>
 #include <cmath>
 
@@ -103,6 +104,20 @@ class BeaverDynamics {
   Eigen::Matrix<T, NX, 1> xdotT(const Eigen::Matrix<T, NX, 1>& x, const T& ua,
                                 const T& va, const T& wa,
                                 const Eigen::Matrix<T, NU, 1>& u) const {
+    const std::array<T, NX> xd = xdotCoreT<T>(x, ua, va, wa, u);
+    Eigen::Matrix<T, NX, 1> out;
+    for (int i = 0; i < NX; ++i) out[i] = xd[i];
+    return out;
+  }
+
+  // Container-agnostic core: `x` and `u` are anything indexable (Eigen
+  // vectors, std::array) whose elements are T; the result is a std::array so
+  // the same code serves the Taylor-jet scalars of lie_taylor.hpp (which
+  // Eigen cannot hold) for the 6-DOF barrier Lie derivatives. Arithmetic is
+  // identical to the former inline body, so the double plant is bit-identical.
+  template <class T, class VX, class VU>
+  std::array<T, NX> xdotCoreT(const VX& x, const T& ua, const T& va,
+                              const T& wa, const VU& u) const {
     using std::asin;
     using std::atan;
     using std::cos;
@@ -171,12 +186,14 @@ class BeaverDynamics {
     const T hdot = ub * st - vb * sp * ct - wb * cp * ct;
     const T ydot = ub * ct * sps + vb * (sp * st * sps + cp * cps) +
                    wb * (cp * st * sps - sp * cps);
+    const T ndot = ub * ct * cps + vb * (sp * st * cps - cp * sps) +
+                   wb * (cp * st * cps + sp * sps);
 
-    Eigen::Matrix<T, NX, 1> xd;
+    std::array<T, NX> xd;
     xd[U] = udot; xd[V] = vdot; xd[W] = wdot;
     xd[autoland::P] = pdot; xd[Q] = qdot; xd[R] = rdot;
     xd[PHI] = phidot; xd[THETA] = thetadot; xd[PSI] = psidot;
-    xd[H] = hdot; xd[Y] = ydot;
+    xd[H] = hdot; xd[Y] = ydot; xd[XN] = ndot;
     return xd;
   }
 

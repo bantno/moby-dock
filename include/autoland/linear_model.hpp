@@ -55,6 +55,8 @@ namespace autoland {
 inline constexpr std::array<int, 5> kLonStates{U, W, Q, THETA, H};
 inline constexpr std::array<int, 2> kLonCtrls{DE, DT};
 inline constexpr std::array<int, 6> kLatStates{V, P, R, PHI, PSI, Y};
+// XN (north position) belongs to neither sub-model: its rate couples both
+// axes through psi and it feeds back into nothing.
 inline constexpr std::array<int, 2> kLatCtrls{DA, DR};
 
 struct LinearModel {

@@ -13,7 +13,7 @@ namespace autoland {
 using Vec = Eigen::VectorXd;
 using Mat = Eigen::MatrixXd;
 
-// ---- Full nonlinear state (11 states) ---------------------------------------
+// ---- Full nonlinear state (12 states) ---------------------------------------
 // Index layout chosen so the longitudinal and lateral-directional sub-models
 // (see linear_model) are simple index selections of this one vector.
 //
@@ -22,15 +22,20 @@ using Mat = Eigen::MatrixXd;
 //   phi, theta, psi : Euler angles (roll, pitch, yaw)    [rad]
 //   h       : altitude (positive up), integrated guidance state   [m]
 //   y       : cross-track position (east of centerline), guidance state [m]
+//   xn      : north position (earth frame), guidance state             [m]
 //
-// Downrange distance is NOT a state (it does not feed back into the dynamics);
-// the sim tracks range-to-touchdown separately for glideslope referencing.
-constexpr int NX = 11;
+// xn is appended LAST (index 11) so every index below it, head<3>() and the
+// longitudinal / lateral sub-model index sets are unchanged from the 11-state
+// layout. It feeds nothing in the aero/EOM rows; it exists so position-aware
+// guidance and barrier functions (corridor, terrain) see the full ground
+// position as a plant state. Named XN (not N): lie_taylor.hpp uses N as a
+// template parameter.
+constexpr int NX = 12;
 enum State : int {
   U = 0, V = 1, W = 2,
   P = 3, Q = 4, R = 5,
   PHI = 6, THETA = 7, PSI = 8,
-  H = 9, Y = 10
+  H = 9, Y = 10, XN = 11
 };
 
 // ---- Virtual control vector (4 controls) ------------------------------------

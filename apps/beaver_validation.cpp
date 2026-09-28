@@ -107,7 +107,8 @@ void dumpMat(const std::string& path, const Mat& M) {
 }
 // --- `--xdot in.csv out.csv`: evaluate the plant xdot at arbitrary states. --
 // Input rows: h_ref,n_rpm,flap, u,v,w,p,q,r,phi,theta,psi,h,y, de,da,dr,dT
-// (SI/rad). Output rows: the 11 xdot components at full double precision.
+// (SI/rad); the north position xn is zero (it feeds nothing). Output rows:
+// the NX = 12 xdot components at full double precision.
 // Consumed by scripts/validate_beaver_sixdof.py, which compares every row
 // against the independent Python implementation over the whole flight
 // envelope -- large body rates, bank, sideslip, flaps -- the regime the
@@ -141,10 +142,11 @@ int dumpXdot(const std::string& in_csv, const std::string& out_csv) {
     pc.n_rpm = v[1];
     pc.flap = v[2];
     BeaverDynamics dyn(pc);
-    StateVec x;
-    for (int i = 0; i < NX; ++i) x[i] = v[3 + i];
+    constexpr int kNin = 11;  // u..y: the input CSV predates the XN state
+    StateVec x = StateVec::Zero();
+    for (int i = 0; i < kNin; ++i) x[i] = v[3 + i];
     CtrlVec u;
-    for (int i = 0; i < NU; ++i) u[i] = v[3 + NX + i];
+    for (int i = 0; i < NU; ++i) u[i] = v[3 + kNin + i];
     const StateVec xd = dyn.xdot(x, u);
     for (int i = 0; i < NX; ++i) outf << xd[i] << (i + 1 < NX ? ',' : '\n');
     ++n;
@@ -170,7 +172,7 @@ int dumpDoublet(const std::string& out_csv) {
   }
   std::ofstream outf(out_csv);
   outf << std::setprecision(17);
-  outf << "t,u,v,w,p,q,r,phi,theta,psi,h,y,de,da,dr,dT\n";
+  outf << "t,u,v,w,p,q,r,phi,theta,psi,h,y,xn,de,da,dr,dT\n";
   StateVec x = t0.x;
   x[H] = 200.0;
   const double dt = 0.01;

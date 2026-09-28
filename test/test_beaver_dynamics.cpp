@@ -3,6 +3,7 @@
 
 #include <Eigen/Eigenvalues>
 #include <cmath>
+#include <random>
 #include <fstream>
 #include <string>
 
@@ -209,6 +210,52 @@ TEST_CASE("Steady 30-deg coordinated turn is an equilibrium (gyroscopic terms)",
   CHECK(std::abs(xd[THETA]) < 1e-9);
   CHECK(xd[PSI] == Approx(Om).epsilon(1e-9));
   CHECK(std::abs(xd[H]) < 1e-8);  // level turn
+  // Level turn: the ground-track rows carry the whole inertial speed (the
+  // course is NOT along psi in a banked, sideslipping turn -- only the norm
+  // is pinned).
+  CHECK(std::hypot(xd[XN], xd[Y]) == Approx(V0).epsilon(1e-12));
+  CHECK(xd[XN] > 0.0);
+}
+
+// North-position row: independent hand oracle (first row of the body->earth
+// DCM) on random states, and consistency with the (h, y) rows -- the three
+// together must reproduce the inertial speed.
+TEST_CASE("Beaver north-position row matches the DCM oracle", "[beaver6]") {
+  BeaverDynamics dyn;
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<double> un(-1.0, 1.0);
+  for (int k = 0; k < 20; ++k) {
+    StateVec x = StateVec::Zero();
+    x[U] = 35.0 + 10.0 * un(rng);
+    x[V] = 4.0 * un(rng);
+    x[W] = 4.0 * un(rng);
+    x[P] = un(rng); x[Q] = un(rng); x[R] = un(rng);
+    x[PHI] = 1.0 * un(rng);
+    x[THETA] = 0.5 * un(rng);
+    x[PSI] = M_PI * un(rng);
+    x[H] = 100.0 * un(rng);
+    x[Y] = 100.0 * un(rng);
+    x[XN] = 1000.0 * un(rng);
+    CtrlVec u;
+    u[DE] = 0.2 * un(rng); u[DA] = 0.2 * un(rng); u[DR] = 0.2 * un(rng);
+    u[DT] = 0.5 + 0.5 * un(rng);
+    const StateVec xd = dyn.xdot(x, u);
+
+    const double cph = std::cos(x[PHI]), sph = std::sin(x[PHI]);
+    const double cth = std::cos(x[THETA]), sth = std::sin(x[THETA]);
+    const double cps = std::cos(x[PSI]), sps = std::sin(x[PSI]);
+    const double ndot = x[U] * cth * cps +
+                        x[V] * (sph * sth * cps - cph * sps) +
+                        x[W] * (cph * sth * cps + sph * sps);
+    CHECK(xd[XN] == Approx(ndot).margin(1e-12));
+    const double Vg = x.head<3>().norm();
+    CHECK(std::hypot(xd[XN], xd[Y], xd[H]) == Approx(Vg).epsilon(1e-12));
+    // XN feeds back into nothing: shifting it leaves every row unchanged.
+    StateVec x2 = x;
+    x2[XN] += 1234.5;
+    const StateVec xd2 = dyn.xdot(x2, u);
+    for (int j = 0; j < NX; ++j) CHECK(xd2[j] == xd[j]);
+  }
 }
 
 // Wind enters only through the aerodynamics: zero wind is bit-identical, the
@@ -228,7 +275,7 @@ TEST_CASE("Beaver wind coupling: zero-wind identity and aero signs",
   CHECK(updraft[W] < still[W]);  // more lift (z-down)
   const StateVec tail = dyn.xdot(x, u, Eigen::Vector3d(5.0, 0, 0));
   CHECK(tail[W] > still[W]);     // less airspeed -> less lift
-  for (int j : {PHI, THETA, PSI, H, Y}) CHECK(tail[j] == still[j]);
+  for (int j : {PHI, THETA, PSI, H, Y, XN}) CHECK(tail[j] == still[j]);
 }
 
 // Closed-loop calm straight-in on the Beaver plant (the default scenario):

@@ -60,7 +60,7 @@ def full_xdot(s9, ctl, prm):
 
     s9 = [V, alpha, beta, p, q, r, psi, theta, phi] -> returns
     [Vdot, alphadot, betadot, pdot, qdot, rdot, psidot, thetadot, phidot,
-     Hdot, yedot].
+     Hdot, yedot, xndot].
     """
     V, al, be, p, q, r, psi, th, ph = s9
     d8 = vbm.xdot(np.array([V, al, be, p, q, r, th, ph]), ctl, prm)
@@ -74,7 +74,9 @@ def full_xdot(s9, ctl, prm):
     Hdot = u * st - v * sp * ct - w * cp * ct
     yedot = (u * ct * sy + v * (sp * st * sy + cp * cy)
              + w * (cp * st * sy - sp * cy))
-    return np.concatenate([d8[:6], [psidot], d8[6:8], [Hdot, yedot]])
+    xndot = (u * ct * cy + v * (sp * st * cy - cp * sy)
+             + w * (cp * st * cy + sp * sy))
+    return np.concatenate([d8[:6], [psidot], d8[6:8], [Hdot, yedot, xndot]])
 
 
 # ============ 1. random-state sweep ==========================================
@@ -188,15 +190,15 @@ subprocess.run([exe, "--doublet", os.path.join(outdir, "beaver_doublet_cpp.csv")
 # ============ compare the sweep pointwise ===================================
 cpp = np.loadtxt(out_csv, delimiter=",")
 ROWS = ["Vdot", "alphadot", "betadot", "pdot", "qdot", "rdot",
-        "psidot", "thetadot", "phidot", "Hdot", "yedot"]
-errs = np.zeros((len(states), 11))
+        "psidot", "thetadot", "phidot", "Hdot", "yedot", "xndot"]
+errs = np.zeros((len(states), 12))
 for i, s in enumerate(states):
     prm = dict(pz=PZ_IDLE + s["dT"] * (PZ_MAX - PZ_IDLE), n_rpm=s["n_rpm"],
                rho=icao_rho(s["h_ref"]), g=grav(s["h_ref"]), flap=s["flap"])
     s9 = np.array([s["V"], s["al"], s["be"], s["p"], s["q"], s["r"],
                    s["psi"], s["th"], s["ph"]], dtype=complex)
     py = full_xdot(s9, [s["de"], s["da"], s["dr"]], prm).real
-    # C++ order: udot vdot wdot pdot qdot rdot phidot thetadot psidot Hdot ydot
+    # C++ order: udot vdot wdot pdot qdot rdot phidot thetadot psidot Hdot ydot xndot
     u = s["V"] * np.cos(s["al"]) * np.cos(s["be"])
     v = s["V"] * np.sin(s["be"])
     w = s["V"] * np.sin(s["al"]) * np.cos(s["be"])
@@ -206,13 +208,14 @@ for i, s in enumerate(states):
     ald = (u * wd - w * ud) / (u * u + w * w)
     bed = (vd * Vt - v * Vd) / (Vt * np.sqrt(u * u + w * w))
     mine = np.array([Vd, ald, bed, cpp[i, 3], cpp[i, 4], cpp[i, 5],
-                     cpp[i, 8], cpp[i, 7], cpp[i, 6], cpp[i, 9], cpp[i, 10]])
+                     cpp[i, 8], cpp[i, 7], cpp[i, 6], cpp[i, 9], cpp[i, 10],
+                     cpp[i, 11]])
     errs[i] = np.abs(mine - py) / np.maximum(1.0, np.abs(py))
 
 max_err = errs.max()
 print(f"\n=== random-state sweep: {len(states)} states "
       f"({N} random + {len(turns)} turn equilibria) ===")
-print(f"  max normalized |cpp - python| over all 11 rows: {max_err:.2e}")
+print(f"  max normalized |cpp - python| over all 12 rows: {max_err:.2e}")
 worst = np.unravel_index(errs.argmax(), errs.shape)
 print(f"  worst: state {worst[0]}, row {ROWS[worst[1]]}")
 sweep_ok = max_err < 1e-8
@@ -263,7 +266,7 @@ fig.suptitle("Beaver 6-DOF full-envelope validation: C++ plant vs independent "
 gs = fig.add_gridspec(2, 3, height_ratios=[1, 1.15])
 
 axA = fig.add_subplot(gs[0, 0])
-axA.boxplot([np.log10(np.maximum(errs[:, j], 1e-18)) for j in range(11)],
+axA.boxplot([np.log10(np.maximum(errs[:, j], 1e-18)) for j in range(12)],
             tick_labels=ROWS, showfliers=True, flierprops=dict(ms=2))
 axA.axhline(-8, color="tab:red", ls="--", lw=1)
 axA.text(6, -7.6, "pass threshold 1e-8", color="tab:red", fontsize=8,
