@@ -157,20 +157,27 @@ struct HocbfRow {
 //   psi_r = L_f^r b + sum_{j<r} e_{r,j} L_f^j b  +  (L_g L_f^{r-1} b) . U  >= 0
 //   with e_{r,j} the elementary-symmetric polynomials in c (built by recursion).
 // QP form:  -(L_g L_f^{r-1} b) . U  <=  sum_j coeff_j L_f^j b.
+// psi coefficient recursion over {L_f^0 b .. L_f^r b}: coeff = shift(coeff)+c_k*coeff,
+// i.e. the elementary-symmetric polynomials of the class-K gains. Shared by the
+// longitudinal rows and the 6-DOF rows (sixdof_cbf.hpp).
+inline std::vector<double> hocbfPsiCoeffs(const std::vector<double>& c) {
+  std::vector<double> coeff(1, 1.0);  // psi_0 = b
+  for (double ck : c) {
+    std::vector<double> next(coeff.size() + 1, 0.0);
+    for (int j = 0; j < static_cast<int>(coeff.size()); ++j) {
+      next[j + 1] += coeff[j];            // L_f shift
+      next[j] += ck * coeff[j];            // c_k * psi_{k-1}
+    }
+    coeff.swap(next);
+  }
+  return coeff;
+}
+
 inline HocbfRow hocbfRow(const std::vector<double>& Lf,
                          const Eigen::Matrix<double, 1, NUA>& LgLf,
                          const std::vector<double>& c) {
   const int r = static_cast<int>(c.size());
-  // psi coefficient recursion over {L_f^0 b .. L_f^r b}: coeff = shift(coeff)+c_k*coeff.
-  std::vector<double> coeff(1, 1.0);  // psi_0 = b
-  for (int k = 0; k < r; ++k) {
-    std::vector<double> next(coeff.size() + 1, 0.0);
-    for (int j = 0; j < static_cast<int>(coeff.size()); ++j) {
-      next[j + 1] += coeff[j];            // L_f shift
-      next[j] += c[k] * coeff[j];          // c_k * psi_{k-1}
-    }
-    coeff.swap(next);
-  }
+  const std::vector<double> coeff = hocbfPsiCoeffs(c);
   HocbfRow row;
   double drift = 0.0;
   for (int j = 0; j <= r; ++j) drift += coeff[j] * Lf[j];

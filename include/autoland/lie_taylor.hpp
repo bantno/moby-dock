@@ -81,6 +81,18 @@ Taylor<N, S> operator/(const Taylor<N, S>& a, const Taylor<N, S>& b) {
   return r;
 }
 template <int N, class S>
+Taylor<N, S> operator/(const Taylor<N, S>& a, double b) {
+  Taylor<N, S> r; for (int k = 0; k <= N; ++k) r[k] = a[k] / b; return r;
+}
+template <int N, class S>
+Taylor<N, S> operator/(double a, const Taylor<N, S>& b) { return Taylor<N, S>(S(a)) / b; }
+// Derivative series a'(t) (top coefficient truncated to 0), for the
+// integral-form rules below: y = int q dt  <=>  y[k] = q[k-1]/k.
+template <int N, class S>
+Taylor<N, S> taylorDeriv(const Taylor<N, S>& a) {
+  Taylor<N, S> d; for (int k = 0; k < N; ++k) d[k] = double(k + 1) * a[k + 1]; return d;
+}
+template <int N, class S>
 Taylor<N, S> sin(const Taylor<N, S>& a) {
   using std::sin; using std::cos;
   Taylor<N, S> s, co; s[0] = sin(a[0]); co[0] = cos(a[0]);
@@ -124,6 +136,74 @@ Taylor<N, S> exp(const Taylor<N, S>& a) {
   }
   return r;
 }
+// t(t) = tanh(a(t)), from t' = (1 - t^2) a'. w = 1 - t*t is built progressively:
+// w[i] needs t[0..i], available before t[k] for every i <= k-1 in the k t[k]
+// = sum_{j=1}^k j a[j] w[k-j] recursion.
+template <int N, class S>
+Taylor<N, S> tanh(const Taylor<N, S>& a) {
+  using std::tanh;
+  Taylor<N, S> t, w;
+  t[0] = tanh(a[0]);
+  w[0] = 1.0 - t[0] * t[0];
+  for (int k = 1; k <= N; ++k) {
+    S s = S(0.0);
+    for (int j = 1; j <= k; ++j) s += double(j) * a[j] * w[k - j];
+    t[k] = s / double(k);
+    S ww = S(0.0);
+    for (int l = 0; l <= k; ++l) ww += t[l] * t[k - l];
+    w[k] = -ww;
+  }
+  return t;
+}
+// tan = sin / cos (both exact above).
+template <int N, class S>
+Taylor<N, S> tan(const Taylor<N, S>& a) { return sin(a) / cos(a); }
+// atan(a): y' = a' / (1 + a^2); asin(a): y' = a' / sqrt(1 - a^2). Integral
+// form: y[k] = q[k-1]/k, y[0] from the scalar function. As with atan2 the
+// top coefficient of q is never read.
+template <int N, class S>
+Taylor<N, S> atan(const Taylor<N, S>& a) {
+  using std::atan;
+  const Taylor<N, S> q = taylorDeriv(a) / (1.0 + a * a);
+  Taylor<N, S> y; y[0] = atan(a[0]);
+  for (int k = 1; k <= N; ++k) y[k] = q[k - 1] / double(k);
+  return y;
+}
+template <int N, class S>
+Taylor<N, S> asin(const Taylor<N, S>& a) {
+  using std::asin;
+  const Taylor<N, S> q = taylorDeriv(a) / sqrt(1.0 - a * a);
+  Taylor<N, S> y; y[0] = asin(a[0]);
+  for (int k = 1; k <= N; ++k) y[k] = q[k - 1] / double(k);
+  return y;
+}
+// theta(t) = atan2(y(t), x(t)), from theta' = (x y' - y x')/(x^2 + y^2):
+//   theta[k] = q[k-1]/k with q = (x y' - y x')/(x^2 + y^2).
+// The [N] coefficient of the numerator would need x[N+1]/y[N+1]; it only feeds
+// q[N], which is never read, so it is left at its (wrong) truncated value.
+template <int N, class S>
+Taylor<N, S> atan2(const Taylor<N, S>& y, const Taylor<N, S>& x) {
+  using std::atan2;
+  Taylor<N, S> xd, yd;  // derivative series (top coefficient truncated to 0)
+  for (int k = 0; k < N; ++k) { xd[k] = double(k + 1) * x[k + 1]; yd[k] = double(k + 1) * y[k + 1]; }
+  const Taylor<N, S> num = x * yd - y * xd;
+  const Taylor<N, S> den = x * x + y * y;
+  const Taylor<N, S> q = num / den;
+  Taylor<N, S> th;
+  th[0] = atan2(y[0], x[0]);
+  for (int k = 1; k <= N; ++k) th[k] = q[k - 1] / double(k);
+  return th;
+}
+
+// Value part of a (possibly nested) jet scalar -- for BRANCH DECISIONS inside
+// templated barrier/drift code (e.g. a series-vs-exact switch near a removable
+// singularity). Branching on the value keeps the jet exact away from the seam.
+inline double scalarValue(double x) { return x; }
+inline double scalarValue(const autodiff::dual& x) {
+  return autodiff::detail::val(x);
+}
+template <int N, class S>
+double scalarValue(const Taylor<N, S>& x) { return scalarValue(x.c[0]); }
 
 // Build the order-R flow jet of X(t) (Xdot = f(X), X(0)=x0) and return
 // {b, L_f b, ..., L_f^R b} as coefficient-typed scalars. `f` and `b` are
