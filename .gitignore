@@ -24,3 +24,8 @@ __pycache__/
 # Personal Claude session context (per-developer, not shared)
 CLAUDE.md
 PROJECT_CONTEXT.md
+
+# Test-suite byproducts written to the CWD by unit_tests
+/test_*.csv
+/test_*.yaml
+/stall_recovery_test_out/

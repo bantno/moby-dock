@@ -53,8 +53,34 @@ Optional per item: `(owner)` and a one-line note.
 
 - [ ] **TECS glideslope-altitude mode.** The port drives PX4's direct height-rate path
       (`hdot_sp = V_ref sin γ_ref`); the altitude loop (`FW_T_ALT_TC`, `FW_T_HRATE_FF`) is ported
-      but unused. Add an `h_sp(x)` glideslope (needs a downrange origin in the scenario) to
-      exercise it.
+      but unused. Add an `h_sp(x)` glideslope to exercise it. (The downrange origin now exists:
+      `XN` is a state and the corridor guidance has `h_gs(L_to_go)` — feed that instead of the
+      cone's `gamma_ref` shift when `nominal.type: tecs`.)
+- [ ] **Pattern guidance follow-ups** (`pattern_guidance.hpp`, see
+      `documentation/corridor_landing_roadmap.md`): replan when the cross-track to the path
+      exceeds a threshold (today: plan once at t = 0); terrain-aware Dubins candidate selection
+      (Phase 2); wind-aware (air-mass frame) Dubins or a continuous-curvature (CC-Dubins /
+      clothoid) planner so the bank on an arc is flyable in wind and the curvature step at
+      each arc entry disappears; a wings-level / decrab gate at contact (today the bank at
+      touchdown is whatever the tracker converged to); TECS + corridor is untested.
+- [ ] **6-DOF CBF follow-ups** (`sixdof_cbf.hpp`): warm-start OSQP (worst step ~10 ms from
+      setup outliers, mean 0.47 ms); a throttle lever for the Phase 3 energy ceiling if "idle
+      on final" in the nominal is not enough (rate-limited controller-side integrator, no plant
+      change); the rate-box infeasibility of the hard AoA row (22 % of arbitrary in-set states)
+      -- either a rate-aware safe set or accept best-effort and report it; wind estimate is
+      idealized (true plant wind) -- add estimate error to the margin once a sensor model exists.
+- [ ] **Mountain gap = corridor gate (Phase 3).** The terrain row cannot steer the straight-in
+      through `fail_gap_final` (roadmap "Phase 2 as built"); formulate the gap as an
+      intermediate gate on a piecewise corridor axis for the cross-track funnel, terrain row as
+      the guard. Also: a warm-started / gated terrain row (51 bumps × 21 lookahead points is
+      1.3 ms/step) and a lookahead that follows a planned path rather than a frozen ray.
+- [ ] **LR-556 sideslip validity band.** The Beaver polynomial fit's identified β range is not
+      stated anywhere in the repo; the pattern roll-ins reach |β| ≈ 4.5-6.3° (11° before the
+      sideslip loop). Find the range in LR-556 / the FDC manual and record it in
+      `beaver_validation.md`; add a β envelope row in Phase 1 either way.
+- [ ] **Rollout model calibration.** `world.rollout.a0` (0.8 m/s²) and `kq` (0.002 /m) are
+      placeholders — calibrate the water-run deceleration against the Beaver POH landing
+      distances (floats) or a step-taxi model.
 - [ ] **TECS airspeed-filter option.** The sim feeds the exact airspeed rate; PX4 flies a 2-state
       fixed-gain complementary filter (`TECSAirspeedFilter`, gains in TECS.hpp) with the
       acceleration input zeroed. Port it as `tecs.airspeed_rate: filter` before any sensor-noise

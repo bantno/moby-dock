@@ -106,6 +106,18 @@ The scenario's `plant:` key selects the airframe (see `sixdof_sim.hpp`):
     data/sixdof_crosswind.yaml runs/ahab_xwind.csv            # AHAB plant
 
 python3 scripts/plot_sixdof_results.py runs/xwind.csv figures/sixdof_xwind.png
+
+# Corridor landing (world: block -- corridor rectangle, terrain height field, pattern
+# guidance from anywhere, water rollout; see documentation/corridor_landing_roadmap.md)
+./build/sixdof_autoland_sim "" "" data/beaver_corridor_overhead.yaml runs/corridor_overhead.csv
+python3 scripts/plot_corridor_landing.py runs/corridor_overhead.csv \
+    data/beaver_corridor_overhead.yaml figures/corridor_overhead.png
+# 6-DOF surfaces-only CBF filter (sixdof_cbf: block): envelope rows on the Beaver plant
+./build/sixdof_autoland_sim "" "" data/beaver_corridor_cbf_tight_pattern.yaml runs/cbf_tight.csv
+# Nominal-failure cases (the barrier rows' ground truth): data/beaver_corridor_fail_*.yaml
+# Interactive replay page (self-contained HTML, open figures/corridor_replay.html in any
+# browser; no server needed). Rebuild after changing scenarios or the controller:
+./scripts/refresh_corridor_replay.sh
 ```
 
 ### Nominal option: PX4 TECS (`nominal.type: tecs`)

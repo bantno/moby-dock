@@ -14,6 +14,7 @@ reproduce the derivations — those live in the math spec.
 | **`water_landing_cbf_design.md`** (this) | Current design: theory, approach, assumptions, decisions, open questions. |
 | `water_landing_cbf_math.md` | Formal derivations: EOM, HOCBF relative-degree analysis, control-affine forms, QP. |
 | `CHANGELOG.md` | Chronological "what changed, when, who, why." |
+| `corridor_landing_roadmap.md` | The 6-DOF corridor / terrain keep-out / go-around effort: phased roadmap, Phase 0 (world geometry, rollout, pattern nominal) as built. |
 | `archive/` | Superseded historical docs (original pitch; the 2026-06-25 implementation notes). |
 
 ---

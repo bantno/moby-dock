@@ -39,6 +39,273 @@ line to it so your Claude session reads this changelog at startup:
 
 ---
 
+## 2026-09-26 — Brian — Gust-in-turn A/B (first real flip), terrain row (Phase 2 WIP) and the mountain-gap negative result
+**Branch/commit:** 6dof (uncommitted)
+**What changed:**
+- **Transient cases.** Swept vertical and lateral gusts against the overhead pattern. The
+  one that works: `beaver_corridor_fail_gust_turn` / `cbf_gust_turn(_off)` — an 18 m/s
+  crosswind gust in the first turn drives α to 17.4° through the β² pitch-up term; with the
+  hard AoA row (13.5°) it peaks at 13.4° and LANDS OK — the first case a barrier row turns a
+  failed run into a landing (test `[corridor][cbf]`). Negative results recorded: vertical
+  gusts do not produce the excursion (and a fast ramp defeats nominal and filter alike;
+  the discrete gust is a persistent step); no lateral gust produced a bank excursion the
+  roll loop could not handle.
+- **Terrain row (Phase 2, in progress)** in `sixdof_cbf.{hpp,cpp}`: degree-3 row builder
+  generalization; pure-clearance (degree 3) row; braking form with a below-margin recovery
+  term; climb-capability lookahead over a fan of directions (frozen course, degree 2);
+  closed-form scalar-generic `TerrainField::gradientT`; YAML `row_terrain`, `terrain_*`.
+  Verified: degree-3 oracle (first order by hand, higher orders vs flow, margin structure),
+  braking-row oracle, and the hostile nose-down test which HOLDS THE CLEARANCE (≥ 2.8 m on
+  a 3 m margin, both time steps) while the barrier quantity goes negative in best-effort —
+  the test says exactly that.
+- **Mountain gap: NEGATIVE RESULT, pinned.** `fail_gap_final` (nominal strikes the flank)
+  and `cbf_gap_final` (every terrain-row variant strikes, usually with a stall) with the
+  structural analysis in the roadmap: a fan wide enough for continuity makes the safe set
+  along the final empty; a ray narrow enough for the gap is discontinuous under yaw. The
+  gap is a corridor problem — Phase 3's cross-track funnel with the gap as a gate.
+- Replay page: 23 runs. 126 tests green.
+**Why:** The user asked for the two transient cases and for a case where the CBFs steer the
+approach through a gap between mountains; the first delivered a genuine flip, the second a
+documented dead end with the reason and the way forward.
+**Follow-ups / notes for collaborator:** Do not tune the terrain row further for the gap —
+the formulation, not the gains, is the limit. Phase 3 should treat the gap as an
+intermediate corridor gate. The terrain row as it stands is a guard for terrain ahead
+(climb-capability lookahead), not a steering device.
+**Files touched:** `include/autoland/{sixdof_cbf,world_geometry}.hpp`, `src/sixdof_cbf.cpp`,
+`src/sixdof_sim.cpp`, `test/{test_sixdof_cbf,test_sixdof_sim}.cpp`,
+`data/beaver_corridor_{fail_gust_turn,cbf_gust_turn,cbf_gust_turn_off,fail_gap_final,cbf_gap_final}.yaml`,
+`figures/corridor_*.png`, `figures/corridor_replay.html`,
+`documentation/{corridor_landing_roadmap,CHANGELOG}.md`, `TODO.md`.
+
+## 2026-09-26 — Brian — Corridor Phase 1: 6-DOF surfaces-only CBF engine, envelope rows, stall-region verdict
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** The 6-DOF CBF-QP safety filter on the Beaver plant, built to the plan
+amended after the controls/experimentalist critique (no engine or servo lag, no turbulence
+or sensor models -- by decision):
+- `include/autoland/sixdof_cbf.hpp`, `src/sixdof_cbf.cpp`: surfaces-only decision vector
+  (throttle stays with the nominal, known constant in the drift → uniform relative degree
+  2, no added state); exact split `f + g U + F (U − u_prev)` with moment-only `g`; Taylor
+  jets of the plant polynomials themselves (`BeaverDynamics::xdotCoreT` refactor,
+  bit-identical for double; `lie_taylor.hpp` gained `tan`/`atan`/`asin`/scalar division);
+  air-relative aerodynamics via an earth-frame wind estimate rotated inside the jet; the
+  four envelope families (AoA ceiling, airspeed floor/ceiling, bank, sideslip) as degree-2
+  HOCBF rows; per-row robustness margin `Σ(|D2| + (c1+c2)|D1|)·rate·dt` with `D1 = L_F h`,
+  `D2 = L_F L_f h + L_f L_F h` computed exactly from an ε-perturbed drift; QP with row
+  normalization, deflection + rate box, hard/soft stacking, best-effort fallback, solver
+  status and timing in the diagnostics.
+- `SixDofNominal::commitApplied`: anti-windup through the filter.
+- `sixdof_sim`: `sixdof_cbf:` block, wiring after the inner loops, stats/CSV/console;
+  `envelope.alpha_stall_deg` — entering the stall region marks the run FAILED
+  (`SixDofTouchdown::success` / `fail_reasons`); wingtip clearance; `nominal.dT_min/max`.
+- `world_geometry.hpp`: `terrainRowMargin()` / `terrainMaxGradient()` for Phase 2.
+- `scripts/calibrate_rollout.py` (POH numbers still to be supplied).
+- Scenarios: `beaver_corridor_cbf_{overhead,crosswind,straight}` (quiet),
+  `cbf_tight_pattern(_off)`, `cbf_slow(_off)`, `fail_tailwind`; `fail_slow` reworked to start
+  inside the band and decelerate into the stall.
+- Tests (`test_sixdof_cbf.cpp` + `test_sixdof_sim.cpp`): model identities, hand oracles
+  (bank kinematics, AoA, margin structure), adversarial invariance per hard row at 10 and
+  2.5 ms, feasibility sweep, quiet-on-landing, tight-pattern A/B, slow A/B, tailwind
+  baseline. 121 tests green. Replay page: 18 runs, CBF chip + strip.
+**Why:** Phase 1 of `corridor_landing_roadmap.md`; the user asked for the critique items to
+be addressed without engine/servo lag and for the stall region to be a failed case.
+**Follow-ups / notes for collaborator:** Three things found the hard way, all in the roadmap
+"Phase 1 as built": (1) the force-term margin needs BOTH orders (the first draft missed the
+flow derivative of the first-order leak); (2) the barrier model MUST be air-relative -- with
+inertial velocities the sideslip row fought the crab and the crosswind case hit the trees;
+(3) the best-effort penalty must be O(1e2): at 1e4+ OSQP hits its iteration limit and the
+filter silently returned the nominal. Measured: the four hard families are jointly
+compatible with the deflection box (200/200) but the one-step rate box makes the hard AoA
+row infeasible at 22 % of arbitrary in-set states -- one hard row per scenario, best-effort
+counted. `cbf_slow` keeps the envelope but does not land (Phase 3's job). Worst-case
+compute ~10 ms/step from OSQP setup outliers (mean 0.47 ms).
+**Files touched:** `include/autoland/{sixdof_cbf,sixdof_nominal,sixdof_sim,beaver_dynamics,
+lie_taylor,hocbf,world_geometry}.hpp`, `src/{sixdof_cbf,sixdof_sim}.cpp`,
+`test/{test_sixdof_cbf,test_sixdof_sim,test_world_geometry}.cpp`, `CMakeLists.txt`,
+`data/beaver_corridor_{cbf_*,fail_slow,fail_tailwind}.yaml`,
+`scripts/{calibrate_rollout.py,build_corridor_replay.py,corridor_replay_template.html,
+refresh_corridor_replay.sh}`, `figures/corridor_*.png`, `figures/corridor_replay.html`,
+`documentation/{corridor_landing_roadmap,CHANGELOG}.md`, `TODO.md`, `README.md`.
+
+## 2026-09-26 — Brian — Seven nominal-failure cases: ground truth for the barrier rows
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** `data/beaver_corridor_fail_{ridge,mountain,short_lake,engine_out,gust_final,slow,tight_pattern}.yaml`
+— scenarios derived from the overhead entry in which the pattern nominal alone does NOT
+land safely: two terrain strikes, an overrun of a short lake at a hot approach speed, an
+engine-out that lands 1.4 km short through the stall, a crabbed (17°) float touchdown
+after a crosswind gust, a slow approach past the AoA band, and a pattern planned tighter
+than the bank limit. Each names the roadmap row that must flip it; the nominal-only
+signatures are pinned by a `[corridor][baseline]` test (`test_sixdof_sim.cpp`), and the
+runs are tabs in the interactive replay — a self-contained, committed HTML page
+`figures/corridor_replay.html` (open in any browser, no server; rebuild with
+`scripts/refresh_corridor_replay.sh` → `scripts/build_corridor_replay.py` +
+`scripts/corridor_replay_template.html`; chips for terrain strike / crab / envelope /
+bank saturation) plus `figures/corridor_fail_*.png`. The page also carries the two
+obstacle views: a vertical profile on distance-to-aim (altitude vs the terrain under the
+CG and the worst terrain within a ±60 m swath, clearance readout at the cursor) and a
+rotatable perspective view of the track over the terrain mesh (plain canvas, painter's
+algorithm, drag to orbit, vertical exaggeration slider, drop line at the cursor).
+New scenario knob: `nominal.dT_min/dT_max` (throttle authority; the plant is unchanged).
+**Why:** Phase 1+ needs cases where a barrier is actually necessary, not decorative; the
+table in `corridor_landing_roadmap.md` "Nominal-failure cases" is that list.
+**Follow-ups / notes for collaborator:** Two negative results: lateral gusts on final do
+not defeat the ground-course tracker (cross-track < 1 m even at 15 m/s), so the
+cross-track funnel needs a different forcing to be demonstrated; and "high" entries are
+absorbed by the cone, so the energy ceiling's case is "hot / short lake". The engine-out
+and slow cases leave the LR-556 envelope (no post-stall aero) — their numbers past α = 16°
+are not physical, the signature is that the nominal gets there at all.
+**Files touched:** `data/beaver_corridor_fail_*.yaml`, `src/sixdof_sim.cpp` (dT overrides),
+`test/test_sixdof_sim.cpp`, `scripts/{build_corridor_replay.py,corridor_replay_template.html}`,
+`figures/corridor_fail_*.png`, `documentation/{corridor_landing_roadmap,CHANGELOG}.md`, `README.md`.
+
+## 2026-09-26 — Brian — Corridor Phase 0: controls-review pass (sideslip loop, direct-line planner, requirement-based tests)
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** An adversarial controls-theory review of the Phase 0 guidance found two
+real defects and several over-claims; all addressed.
+- **Sideslip feedback on the rudder in `stepInnerPhi`** (`sixdof_nominal.hpp`): the
+  turn-rate feedforward alone is not coordination — the rudder stayed parked at trim and
+  |β| reached 11° at every roll-in. The PI from `stepInnerBeta` (β_cmd = trim sideslip)
+  now runs alongside `-Kr (r - r_coord)`. Effect on the overhead case: max cross-track to
+  the path 35 → 9 m, touchdown offset 1.5 → 0.02 m, |β| 11 → 4.5°, bank-limit steps
+  1683 → 0; crosswind 100 → 12 m and 3171 → 0 limit steps.
+- **Planner robustness** (`pattern_guidance.cpp`): a DIRECT-line candidate when the
+  aircraft is within 30 m / 5° of the axis ahead of the FAF; CSC candidates with an arc
+  > 350° rejected; guard for coincident circles; `plan()` refuses γ_app ≥ 0. The
+  straight-in anchor previously got a near-straight RSL only because the inner tangent
+  existed by 0.11 m; it is now DIRECT and a ±5 m / ±1° perturbation test says so.
+- **Honest naming:** "arclength-carrot pursuit with the Park–Deyst–How gain" (ArduPilot
+  L1 parameterization; ζ = 1/√2, ω_n = √2 V/L1 stated), `L1_damping` → `L1_scale`,
+  "shortest of the CSC words" not "Dubins shortest path", "turn-rate feedforward + β PI"
+  not "turn coordination". Header comment no longer claims a fixed point.
+- **Reporting:** course error χ − ψ_c at touchdown (the alignment metric; heading error
+  is crab-dominated in wind), bank at contact, max cross-track to path, bank-limit step
+  count, all on the console and in `SixDofRunStats` / `SixDofTouchdown`; the roadmap
+  table carries them for all three cases (the crosswind row was under-reported).
+- **Tests:** requirement-based bounds shared by the pattern cases
+  (`checkPatternLanding`), a crosswind end-to-end case, `stepOuter` ≡ `stepOuterRef`
+  bit-identity over 500 random steps in both lon modes, self-crossing-path and
+  far-from-path window cases, all-candidates Dubins check, coincident-circle and
+  aligned-goal pathology cases, combined-coefficient rollout closed form, non-vacuous
+  terrain clearance. 109 tests green.
+**Why:** The user asked that Phase 0 stand up to peer review by a controls theorist
+before Phase 1. The findings (and what remains) are recorded in
+`corridor_landing_roadmap.md` "Phase 0 as built".
+**Follow-ups / notes for collaborator:** Still open and now in TODO: the LR-556 sideslip
+validity band is not stated in the source (the roll-in reaches |β| ≈ 6°); wind-aware or
+continuous-curvature planning; a wings-level / decrab gate at contact; TECS + corridor
+untested; the crosswind scenario's wind is a t = 0 step (first ~3 s are a gust
+response). Placeholders `rollout.a0/kq` unchanged.
+**Files touched:** `include/autoland/{sixdof_nominal,pattern_guidance,sixdof_sim}.hpp`,
+`src/{pattern_guidance,sixdof_sim}.cpp`, `test/{test_pattern_guidance,test_world_geometry,
+test_sixdof_sim}.cpp`, `data/beaver_corridor_{straight,crosswind}.yaml`,
+`scripts/{build_corridor_replay.py,corridor_replay_template.html}`, `figures/corridor_*.png`,
+`documentation/{corridor_landing_roadmap,CHANGELOG,beaver_validation}.md`, `TODO.md`.
+
+## 2026-09-26 — Brian — Corridor landing Phase 0: north state, world geometry, water rollout, pattern nominal
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** Foundations for the corridor / terrain-keep-out landing problem (roadmap in
+the new `documentation/corridor_landing_roadmap.md`, agreed by interview: water landing with a
+planar rollout, full 6-DOF actuator-level CBFs later, terrain height field for keep-out,
+target-tracking pattern nominal, oriented one-way rectangle corridor, start anywhere, go-around
+in the target solution). This session = Phase 0, no CBF rows:
+- **`XN` north position is now plant state 11** (`NX = 12`, `types.hpp`); north row added to
+  `BeaverDynamics::xdotT` and `Dynamics::xdot`; the sim's trapezoid `x_pos` is gone. Legacy
+  scenarios are bit-identical in every column except `x` (<= 4e-7 m). `beaver_validation`
+  and `scripts/validate_beaver_sixdof.py` (12 rows, independent `xndot`) updated.
+- **`world_geometry.hpp`:** `Corridor` (center/length/width/heading/aim point, corridor
+  frame), `TerrainField` (rotated super-Gaussian bumps + `addRing` for shore trees; templated
+  `height<T>` so Taylor jets evaluate it exactly; exact `gradient` via dual), `RolloutConfig`,
+  `WorldConfig`; scenario `world:` block parsed in `sixdof_sim.cpp`.
+- **`water_rollout.hpp`:** planar water run after touchdown (`Vgdot = -(a0 + kq Vg²)`, course
+  steered to the corridor heading), RK4, closed forms in the tests; result nested in
+  `SixDofTouchdown::rollout`; CSV continues with `phase = 1` rows.
+- **`pattern_guidance.{hpp,cpp}`:** Dubins CSC planner (tangent geometry derived, verified by
+  independent forward integration for all four words), path with a windowed closest-point
+  search, FAF placement by a 25 m grid scan so Dubins + final ≈ the descent distance at
+  gamma_app, glideslope cone → `gamma_ref`, L1 course tracking → `phi_cmd`.
+- **`SixDofNominal`:** `stepOuterRef` (outer loops at supplied references; `stepOuter` is a
+  bit-identical wrapper) and `stepInnerPhi` (bank command + turn-coordinated yaw damper).
+- **Sim:** third control branch for `world.enabled`; touchdown against `max(eta, h_T)` with
+  terrain-strike detection; corridor metrics (`in_corridor`, `s/e`, heading error, crab);
+  rollout; stats (`min_terrain_clearance`, `max_abs_e_final`, plan length/word); console block;
+  13 new CSV columns appended.
+- **Scenarios:** `data/beaver_corridor_{straight,overhead,crosswind}.yaml`; figures
+  `figures/corridor_*.png` via `scripts/plot_corridor_landing.py`.
+- **Tests:** `test_world_geometry.cpp`, `test_pattern_guidance.cpp`, two corridor end-to-end
+  cases in `test_sixdof_sim.cpp`, north-row oracle in `test_beaver_dynamics.cpp` — 106 tests,
+  all green.
+**Why:** The goal is "set a corridor and keep-out zones and let the CBFs guide the aircraft
+in"; the CBFs guard a trajectory, they do not generate one, so the target-tracking nominal
+and the geometry/rollout plumbing had to exist first (cf. `energy_ceiling_touchdown_notes.md`
+§3). Results: all three cases touch down inside the corridor (overhead entry: e = -1.5 m,
+heading error -1.7°, 35 m max cross-track to the path, 10.6 m over the shore trees) and the
+rollout stops inside.
+**Follow-ups / notes for collaborator:** Three surprises are worth knowing before touching
+the guidance: (1) Dubins length is discontinuous in the goal pose — a nearly aligned FAF just
+ahead needs a full loop (the trim sideslip alone offsets the initial course by 0.8°), hence
+the grid scan instead of a fixed point; (2) the closest-point search needs a FORWARD window
+because an overhead entry sits on the corridor axis at t = 0; (3) the legacy yaw damper has
+no turn coordination and skids every steady turn (3°/s at 22° bank vs 5.8 coordinated) —
+`stepInnerPhi` fixes it, `stepInner` is deliberately untouched. Rollout `a0`/`kq` are
+placeholders (TODO). Next: Phase 1 (6-DOF CBF engine with an engine-lag augmented state) per
+the roadmap.
+**Files touched:** `include/autoland/{types,world_geometry,water_rollout,pattern_guidance,
+sixdof_nominal,sixdof_sim,beaver_dynamics,linear_model}.hpp`, `src/{pattern_guidance,
+sixdof_sim,dynamics,linear_model}.cpp`, `apps/beaver_validation.cpp`,
+`scripts/{validate_beaver_sixdof,plot_corridor_landing}.py`, `data/beaver_corridor_*.yaml`,
+`test/{test_world_geometry,test_pattern_guidance,test_sixdof_sim,test_beaver_dynamics,
+test_linear_model}.cpp`, `CMakeLists.txt`, `figures/corridor_*.png`,
+`documentation/{corridor_landing_roadmap,beaver_validation,water_landing_cbf_design,
+energy_ceiling_touchdown_notes}.md`, `TODO.md`.
+
+## 2026-09-09 — Brian — Design notes: flipping the reach-energy CBF into a ceiling for gentle touchdown
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** New `documentation/energy_ceiling_touchdown_notes.md` — discussion-only
+(no code): barriers to flipping h_E into an energy CEILING and pairing floor + ceiling +
+impact CBF for a gentle touchdown within a region. Key points: the naive sign flip
+inherits the floor's current-alpha pricing, which is conserved (never binds early) and
+degenerates at low alpha into a dive-to-dissipate command — price the ceiling at
+max-dissipation CAPABILITY (worst L/D in the current drag config) instead, which also
+splits the actuators cleanly (floor owns pitch, ceiling owns slip/bank/S-turn/flaps/
+throttle-down); energy alone cannot produce "gentle" (sink is unconstrained at fixed E —
+the impact row is the flare); bank-to-turn is the cheapest big win; the target-blind
+nominal is the biggest unlisted gap; thrust conservatism flips sign for a ceiling;
+region semantics = floor to the near edge, ceiling to the far edge. Sequencing proposal
+at the end. Cross-linked from `energy_reach_cbf.md` §4.
+**Why:** Brian wants the eventual behavior "gentle touchdown within a desired region,
+like an actual seaplane pilot"; these notes settle the design questions before any
+derivation.
+**Follow-ups / notes for collaborator:** Step 1 of the sequencing (bank-to-turn in the
+point-mass layer) is self-contained and unblocks the rest.
+**Files touched:** documentation/energy_ceiling_touchdown_notes.md,
+documentation/energy_reach_cbf.md, documentation/CHANGELOG.md
+
+## 2026-09-06 — Brian — Reach-the-target energy CBF (3-DOF formulation) evaluated on the 6-DOF Beaver
+**Branch/commit:** 6dof (uncommitted)
+**What changed:** Implemented the reformulated energy CBF from the EnergyCBF slide deck —
+alpha-dependent glide ratio L/D(α) = C_Lα·α̃/(C_D0+C_Dα2·α̃²) and heading-dependent
+circular-arc distance d = Rφ/sinφ — as a uniform relative-degree-1 CBF-QP on a 7-state
+point-mass glide model (controls α̇, β), dropped into SixDofSim between the nominal's
+outer and inner loops. New: `energy_reach_cbf.{hpp,cpp}` (model, barrier with smooth
+guards, exact Lie bundle via the Taylor-jet engine, hard-row QP with closed-form max-ḣ
+fallback, idle-polar fit from the Beaver polynomials); Taylor `atan2`/`tanh` in
+`lie_taylor.hpp`; `SixDofNominal` split into stepOuter/stepInner + a wings-level rudder
+sideslip inner loop; `energy_cbf:` scenario block (idle-glide gamma solve, YAML target
+defaulting to the aim point, h_E/CBF CSV columns and stats); 5 scenarios + A/B figures
++ 7 unit tests. All 94 tests pass.
+**Why:** See how well the new formulation works implemented in 3 DOF and simulated in
+6 DOF before committing to the full 6-DOF derivation.
+**Follow-ups / notes for collaborator:** Read `energy_reach_cbf.md` §4 before the 6-DOF
+port — key findings: h_E is CONSERVED along any on-polar glide (class-K gain ck is the
+"how early" dial; scenarios use 0.01, not the 0.3-style defaults); h_E ≥ 0 is necessary
+but not sufficient to arrive (kinetic reserve counts, ground interrupts the trade);
+skid-to-turn has a ~1.2 km turn radius so big offsets are unrecoverable (bank-to-turn or
+a Dubins d for the port); the plant pays ~25% sideslip drag the model omits; a soft
+slack on the energy row is numerically untenable (hard row + best-effort rail instead).
+**Files touched:** include/autoland/{energy_reach_cbf,lie_taylor,sixdof_nominal,sixdof_sim}.hpp,
+src/{energy_reach_cbf,sixdof_sim}.cpp, test/test_energy_reach.cpp,
+data/beaver_reach_*.yaml, scripts/plot_energy_reach.py, figures/reach_*.png,
+runs/beaver_reach_*.csv, documentation/energy_reach_cbf.md, CMakeLists.txt
+
 ## 2026-08-27 — Brian — PX4 TECS tuned for the Beaver with a hold-out protocol
 **Branch/commit:** 6dof (uncommitted)
 **What changed:** Beaver TECS defaults in `sixdof_sim.cpp` are now `ptch_damp 1.0`,

@@ -203,3 +203,17 @@ POH configuration gets its own flapped scenario at 33.5 m/s (α ≈ 3.7°).
 * Flare + decrab for realistic touchdown speeds (couples with the CBF work).
 * Bound the power-rate control u_P to the real engine spool rate when the CBF
   filter moves onto this plant.
+
+## State-vector note (2026-09-26)
+
+The plant state grew from 11 to 12: `XN` (earth-frame north position) was appended as index 11
+(`types.hpp`). Its row is the first row of the body-to-earth DCM and it feeds back into nothing,
+so every validation result above is unchanged; `scripts/validate_beaver_sixdof.py` now compares
+12 rows (the independent Python `full_xdot` gained `xndot`) and `beaver_validation --doublet`
+writes an `xn` column.
+
+**Sideslip validity (open):** the β range over which the LR-556 polynomials were identified
+is not recorded here. The corridor pattern roll-ins reach |β| ≈ 4.5–6.3° (`corridor_landing_roadmap.md`),
+which is inside the ±15° grid the full-envelope sweep above exercises numerically, but numerical
+agreement with the independent implementation says nothing about the fit's physical validity there.
+See TODO.
