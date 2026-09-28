@@ -83,6 +83,12 @@ struct SixDofNominalConfig {
   // delta_a). 0.15 puts the pole at ~69 rad/s (0.69 per step).
   double Kp_phi{1.0}, Kp_p{0.15};
   double Kr{0.2};
+  double g{9.80665};  // for the turn-coordination feedforward (stepInnerPhi)
+  // Sideslip-tracking rudder loop (PI), used only by stepInnerBeta -- the
+  // wings-level skid-to-turn lateral mode of the energy-reach CBF layer.
+  // Written in the AHAB virtual sense (+dr -> nose RIGHT -> beta DECREASES),
+  // so the loop pushes -Kp_beta*e_beta and dr_sign flips it for the Beaver.
+  double Kp_beta{2.0}, Ki_beta{0.5};
   // Control-effectiveness SENSE per axis, multiplying the feedback terms
   // (never the trim feedforward). +1 = the AHAB virtual-control sense
   // (positive de -> nose UP, positive da -> roll RIGHT, positive dr -> yaw
@@ -107,25 +113,47 @@ class SixDofNominal {
  public:
   explicit SixDofNominal(const SixDofNominalConfig& cfg) : c_(cfg) {}
 
-  // One control step. x is the full (inertial) state; V_air the measured
-  // airspeed and Vdot_air its (exact) time derivative -- consumed by the TECS
-  // outer loop only (SKE rate = V Vdot). Returns absolute virtual controls
-  // [de, da, dr, dT] with the deflection and rate limits applied.
+  // Outer-loop command bundle: the longitudinal references the inner loops
+  // track.
+  struct LonOuterCmd {
+    double theta_cmd{0};
+    double dT{0};
+  };
+
+  // One control step (outer loops -> shared inner loops). x is the full
+  // (inertial) state; V_air the measured airspeed and Vdot_air its (exact)
+  // time derivative -- consumed by the TECS outer loop only (SKE rate =
+  // V Vdot). Returns absolute virtual controls [de, da, dr, dT] with the
+  // deflection and rate limits applied.
   CtrlVec step(const StateVec& x, double V_air, double Vdot_air, double dt) {
+    const LonOuterCmd oc = stepOuter(x, V_air, Vdot_air, dt);
+    return stepInner(x, oc.theta_cmd, oc.dT, dt);
+  }
+
+  // Longitudinal OUTER loops only (cascade or TECS) -> {theta_cmd, dT}. Split
+  // from the inner loops so a safety filter can reshape theta_cmd in between
+  // (sixdof_sim's energy-reach CBF layer). Call exactly once per step, then
+  // exactly one of stepInner / stepInnerBeta.
+  LonOuterCmd stepOuter(const StateVec& x, double V_air, double Vdot_air,
+                        double dt) {
+    return stepOuterRef(x, V_air, Vdot_air, c_.gamma_ref, c_.V_ref, dt);
+  }
+
+  // Outer loops at externally supplied references (the pattern guidance's
+  // glideslope-cone gamma_ref and its approach speed). stepOuter() is this
+  // with the config references -- bit-identical to the pre-guidance loop.
+  LonOuterCmd stepOuterRef(const StateVec& x, double V_air, double Vdot_air,
+                           double gamma_ref, double V_ref, double dt) {
     const double sp = std::sin(x[PHI]), cp = std::cos(x[PHI]);
     const double st = std::sin(x[THETA]), ct = std::cos(x[THETA]);
-    const double sy = std::sin(x[PSI]), cy = std::cos(x[PSI]);
 
-    // Inertial climb/cross-track rates from the state kinematics (same rows
-    // as Dynamics::xdot), and the inertial flight-path angle.
+    // Inertial climb rate from the state kinematics (same rows as
+    // Dynamics::xdot), and the inertial flight-path angle.
     const double hdot = x[U] * st - x[V] * sp * ct - x[W] * cp * ct;
-    const double ydot = x[U] * ct * sy + x[V] * (sp * st * sy + cp * cy) +
-                        x[W] * (cp * st * sy - sp * cy);
     const double Vg = std::max(
         1e-3, std::sqrt(x[U] * x[U] + x[V] * x[V] + x[W] * x[W]));
     const double gamma = std::asin(std::clamp(hdot / Vg, -1.0, 1.0));
 
-    CtrlVec u;
     double dT, theta_cmd;
 
     if (c_.lon_mode == LonMode::Tecs) {
@@ -137,12 +165,12 @@ class SixDofNominal {
       px4::TecsParam prm = c_.tecs;
       // PX4: _load_factor_from_bank_angle = 1 / max(cos(phi), FLT_EPSILON).
       prm.load_factor = 1.0 / std::max(cp, double(FLT_EPSILON));
-      const double hdot_sp = c_.V_ref * std::sin(c_.gamma_ref);
+      const double hdot_sp = V_ref * std::sin(gamma_ref);
       px4::TecsSetpoint tsp;
       tsp.altitude_reference.alt = x[H];
       tsp.altitude_reference.alt_rate = hdot;
       tsp.altitude_rate_setpoint_direct = hdot_sp;
-      tsp.tas_setpoint = c_.V_ref;
+      tsp.tas_setpoint = V_ref;
       const px4::TecsInput tin{x[H], hdot, V_air, Vdot_air};
       const px4::TecsFlag flag{true, c_.tecs_detect_underspeed};
       if (!tecs_initialized_) {
@@ -161,7 +189,7 @@ class SixDofNominal {
       hdot_sp_ = hdot_sp;
     } else {
       // --- Airspeed -> throttle (PI, frontside; anti-windup on the clamp). -
-      const double eV = c_.V_ref - V_air;
+      const double eV = V_ref - V_air;
       V_int_ += eV * dt;
       dT = c_.dT_trim + c_.Kp_V * eV + c_.Ki_V * V_int_;
       if (dT > c_.limits.dT_max) { dT = c_.limits.dT_max; V_int_ -= eV * dt; }
@@ -169,7 +197,7 @@ class SixDofNominal {
 
       // --- Glidepath: speed-shifted gamma reference -> theta_cmd (PI). ------
       const double gamma_ref_eff =
-          c_.gamma_ref + std::clamp(c_.Kv_gamma * (V_air - c_.V_ref),
+          gamma_ref + std::clamp(c_.Kv_gamma * (V_air - V_ref),
                                     -c_.dgamma_V_max, c_.dgamma_V_max);
       const double e_gamma = gamma_ref_eff - gamma;
       gamma_int_ += e_gamma * dt;
@@ -179,22 +207,26 @@ class SixDofNominal {
       const double th_hi = c_.theta_trim + c_.theta_cmd_max;
       if (theta_cmd > th_hi) { theta_cmd = th_hi; gamma_int_ -= e_gamma * dt; }
       else if (theta_cmd < th_lo) { theta_cmd = th_lo; gamma_int_ -= e_gamma * dt; }
-      hdot_sp_ = c_.V_ref * std::sin(gamma_ref_eff);
+      hdot_sp_ = V_ref * std::sin(gamma_ref_eff);
     }
+    theta_cmd_ = theta_cmd;
+    return {theta_cmd, dT};
+  }
+
+  // INNER loops at externally supplied longitudinal references. Default
+  // lateral: cross-track y (+ rate) -> bank -> aileron; yaw damper -> rudder.
+  CtrlVec stepInner(const StateVec& x, double theta_cmd, double dT, double dt) {
+    CtrlVec u;
     u[DT] = dT;
     theta_cmd_ = theta_cmd;
-
-    // --- Pitch inner PID -> elevator (anti-windup on the deflection clamp). --
-    const double e_theta = theta_cmd - x[THETA];
-    theta_int_ += e_theta * dt;
-    double de = c_.de_trim +
-                c_.de_sign * (c_.Kp_theta * e_theta +
-                              c_.Ki_theta * theta_int_ - c_.Kq * x[Q]);
-    if (de > c_.limits.de_max) { de = c_.limits.de_max; theta_int_ -= e_theta * dt; }
-    else if (de < c_.limits.de_min) { de = c_.limits.de_min; theta_int_ -= e_theta * dt; }
-    u[DE] = de;
+    u[DE] = pitchInner(x, theta_cmd, dt);
 
     // --- Cross-track -> bank command (PD, clamped). --------------------------
+    const double sp = std::sin(x[PHI]), cp = std::cos(x[PHI]);
+    const double st = std::sin(x[THETA]), ct = std::cos(x[THETA]);
+    const double sy = std::sin(x[PSI]), cy = std::cos(x[PSI]);
+    const double ydot = x[U] * ct * sy + x[V] * (sp * st * sy + cp * cy) +
+                        x[W] * (cp * st * sy - sp * cy);
     double phi_cmd = -c_.Kp_y * x[Y] - c_.Kd_y * ydot;
     phi_cmd = std::clamp(phi_cmd, -c_.phi_max, c_.phi_max);
     phi_cmd_ = phi_cmd;
@@ -207,6 +239,87 @@ class SixDofNominal {
     return applyLimits(u, dt);
   }
 
+  // INNER loops at an externally supplied BANK command (pattern guidance's
+  // carrot course tracking): pitch as stepInner; roll PD tracks phi_cmd
+  // (clamped to phi_max); the rudder carries a TURN-RATE FEEDFORWARD yaw
+  // damper plus SIDESLIP feedback:
+  //   dr = dr_trim + dr_sign * ( -(Kp_beta e_b + Ki_beta int e_b)
+  //                              - Kr (r - r_coord) ),
+  //   r_coord = g sin(phi) cos(theta) / V,   e_b = beta_cmd - beta.
+  // r_coord is the exact body yaw rate of a steady turn (phidot = thetadot
+  // = 0, any gamma) under mu ~ phi and beta = 0: with psidot = g tan(mu)/V,
+  // r = psidot cos(phi) cos(theta). Without it the pure damper (-Kr r)
+  // opposes every steady turn -- at 22 deg bank the Beaver skidded round at
+  // 3 deg/s instead of the coordinated 5.8. The feedforward alone still
+  // left |beta| = 11 deg at the roll-in (adverse yaw, rudder parked at
+  // trim); the beta PI (same loop as stepInnerBeta, beta_cmd = the trim
+  // sideslip) is what makes the turn coordinated in the sideslip sense.
+  CtrlVec stepInnerPhi(const StateVec& x, double V_air, double theta_cmd,
+                       double dT, double phi_cmd, double beta_meas,
+                       double beta_cmd, double dt) {
+    CtrlVec u;
+    u[DT] = dT;
+    theta_cmd_ = theta_cmd;
+    u[DE] = pitchInner(x, theta_cmd, dt);
+    phi_cmd = std::clamp(phi_cmd, -c_.phi_max, c_.phi_max);
+    phi_cmd_ = phi_cmd;
+    u[DA] = c_.da_trim +
+            c_.da_sign * (c_.Kp_phi * (phi_cmd - x[PHI]) - c_.Kp_p * x[P]);
+    const double r_coord =
+        c_.g * std::sin(x[PHI]) * std::cos(x[THETA]) / std::max(5.0, V_air);
+    const double e_be = beta_cmd - beta_meas;
+    beta_int_ += e_be * dt;
+    last_dbeta_int_ = e_be * dt;
+    double dr = c_.dr_trim +
+                c_.dr_sign * (-(c_.Kp_beta * e_be + c_.Ki_beta * beta_int_) -
+                              c_.Kr * (x[R] - r_coord));
+    if (dr > c_.limits.dr_max) { dr = c_.limits.dr_max; beta_int_ -= e_be * dt; last_dbeta_int_ = 0.0; }
+    else if (dr < c_.limits.dr_min) { dr = c_.limits.dr_min; beta_int_ -= e_be * dt; last_dbeta_int_ = 0.0; }
+    u[DR] = dr;
+    return applyLimits(u, dt);
+  }
+
+  // Anti-windup through a downstream safety filter: tell the nominal what
+  // was ACTUALLY applied. Any axis the filter moved this step has its
+  // integrator increment undone (the same conditional integration the
+  // nominal's own clamps use), and the rate limiter's reference becomes the
+  // applied command, so the nominal never winds up against the filter.
+  void commitApplied(const CtrlVec& u_applied) {
+    if (std::abs(u_applied[DE] - u_prev_[DE]) > 1e-9) theta_int_ -= last_dtheta_int_;
+    if (std::abs(u_applied[DR] - u_prev_[DR]) > 1e-9) beta_int_ -= last_dbeta_int_;
+    last_dtheta_int_ = last_dbeta_int_ = 0.0;
+    u_prev_ = u_applied;
+  }
+
+  // INNER loops for the energy-reach CBF layer: pitch as stepInner; lateral
+  // goes WINGS LEVEL (phi_cmd = 0, no cross-track loop) and the rudder tracks
+  // the commanded sideslip (PI + yaw damper) -- the 3-DOF point-mass model's
+  // skid-to-turn channel realized on the 6-DOF plant. In the AHAB virtual
+  // sense +dr yaws the nose RIGHT, which DECREASES beta, hence the -Kp_beta
+  // feedback (dr_sign maps it onto the Beaver's Cn_dr < 0).
+  CtrlVec stepInnerBeta(const StateVec& x, double theta_cmd, double dT,
+                        double beta_meas, double beta_cmd, double dt) {
+    CtrlVec u;
+    u[DT] = dT;
+    theta_cmd_ = theta_cmd;
+    u[DE] = pitchInner(x, theta_cmd, dt);
+
+    phi_cmd_ = 0.0;
+    u[DA] = c_.da_trim +
+            c_.da_sign * (c_.Kp_phi * (0.0 - x[PHI]) - c_.Kp_p * x[P]);
+
+    const double e_be = beta_cmd - beta_meas;
+    beta_int_ += e_be * dt;
+    double dr = c_.dr_trim +
+                c_.dr_sign * (-(c_.Kp_beta * e_be + c_.Ki_beta * beta_int_) -
+                              c_.Kr * x[R]);
+    if (dr > c_.limits.dr_max) { dr = c_.limits.dr_max; beta_int_ -= e_be * dt; }
+    else if (dr < c_.limits.dr_min) { dr = c_.limits.dr_min; beta_int_ -= e_be * dt; }
+    u[DR] = dr;
+
+    return applyLimits(u, dt);
+  }
+
   double thetaCmd() const { return theta_cmd_; }
   double phiCmd() const { return phi_cmd_; }
   // Height-rate reference [m/s]: the TECS direct setpoint, or for the cascade
@@ -215,13 +328,26 @@ class SixDofNominal {
   bool tecsActive() const { return c_.lon_mode == LonMode::Tecs; }
   const px4::TecsDebugOutput& tecsDebug() const { return tecs_.getDebugOutput(); }
   void reset() {
-    V_int_ = gamma_int_ = theta_int_ = 0.0;
+    V_int_ = gamma_int_ = theta_int_ = beta_int_ = 0.0;
     have_prev_ = false;
     tecs_ = px4::TecsControl{};
     tecs_initialized_ = false;
   }
 
  private:
+  // Pitch inner PID -> elevator (anti-windup on the deflection clamp).
+  double pitchInner(const StateVec& x, double theta_cmd, double dt) {
+    const double e_theta = theta_cmd - x[THETA];
+    theta_int_ += e_theta * dt;
+    last_dtheta_int_ = e_theta * dt;
+    double de = c_.de_trim +
+                c_.de_sign * (c_.Kp_theta * e_theta +
+                              c_.Ki_theta * theta_int_ - c_.Kq * x[Q]);
+    if (de > c_.limits.de_max) { de = c_.limits.de_max; theta_int_ -= e_theta * dt; last_dtheta_int_ = 0.0; }
+    else if (de < c_.limits.de_min) { de = c_.limits.de_min; theta_int_ -= e_theta * dt; last_dtheta_int_ = 0.0; }
+    return de;
+  }
+
   // Deflection clamps + surface rate limit against the previously APPLIED
   // command (throttle is clamped in the loop; no rate limit on it).
   CtrlVec applyLimits(CtrlVec u, double dt) {
@@ -243,6 +369,8 @@ class SixDofNominal {
   double V_int_{0.0};
   double gamma_int_{0.0};
   double theta_int_{0.0};
+  double beta_int_{0.0};
+  double last_dtheta_int_{0.0}, last_dbeta_int_{0.0};
   double theta_cmd_{0.0};
   double phi_cmd_{0.0};
   double hdot_sp_{0.0};
