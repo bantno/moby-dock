@@ -110,6 +110,7 @@ add_library(autoland_core
   src/sixdof_sim.cpp
   src/beaver_dynamics.cpp
   src/px4_tecs.cpp
+  src/energy_reach_cbf.cpp
   src/pattern_guidance.cpp
 )
 target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
