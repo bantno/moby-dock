@@ -1,0 +1,21 @@
+# Powered approach under the (unpowered) reach-energy CBF -- the conservatism
+# case. A -5.8 deg approach at 40 m/s, slightly SHALLOWER than the idle glide
+# (-6.2 deg), so the throttle loop carries a trickle of power; the target is
+# the glideslope aim point (~2954 m) and h_E(0) ~ +85. The barrier's drift
+# still models a windmilling glide, so the true energy decays SLOWER than
+# predicted: h_E climbs through the approach (+265 by touchdown), the filter
+# stays quiet after the initial transient, and the vehicle lands ~40 m from
+# the aim point. NOTE: do NOT point this barrier at a shallow powered aim
+# point far beyond gliding reach (e.g. -3.5 deg from 300 m) -- h_E(0) starts
+# deeply negative and the filter will fight the whole approach.
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -5.8
+t_max: 150.0
+initial:
+  h0: 300.0
+energy_cbf:
+  enabled: true
+  throttle: nominal
+  V_min: 30.0
+  ck: 0.01

@@ -1,0 +1,386 @@
+<title>Corridor Landing Replay</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f4f1; --panel:#ffffff; --water:#dfe7ec; --ink:#1c2126; --ink2:#5a6570; --muted:#8d97a0;
+  --rule:#d5d9d3; --flown:#1f5fa8; --cmd:#c9631d; --roll:#2a8a5f; --td:#b0234f; --ref:#6b7680;
+  --corr:rgba(31,95,168,.10); --good:#2a8a5f; --bad:#b0234f; --focus:#1f5fa8;
+  --t1:#f6e9b8; --t2:#e8b96b; --t3:#c47a3a; --t4:#7d4a22;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#14181c; --panel:#1b2127; --water:#1d2a33; --ink:#e4e7e2; --ink2:#aab3ba; --muted:#78838c;
+  --rule:#2c343b; --flown:#6fa6e6; --cmd:#e9925a; --roll:#5cbf94; --td:#e0567f; --ref:#8f9aa4;
+  --corr:rgba(111,166,230,.14); --good:#5cbf94; --bad:#e0567f; --focus:#6fa6e6;
+  --t1:#4a4224; --t2:#7a5a2c; --t3:#a86a33; --t4:#d9a061;
+}}
+:root[data-theme="dark"]{
+  --bg:#14181c; --panel:#1b2127; --water:#1d2a33; --ink:#e4e7e2; --ink2:#aab3ba; --muted:#78838c;
+  --rule:#2c343b; --flown:#6fa6e6; --cmd:#e9925a; --roll:#5cbf94; --td:#e0567f; --ref:#8f9aa4;
+  --corr:rgba(111,166,230,.14); --good:#5cbf94; --bad:#e0567f; --focus:#6fa6e6;
+  --t1:#4a4224; --t2:#7a5a2c; --t3:#a86a33; --t4:#d9a061;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif}
+.wrap{max-width:1500px;margin:0 auto;padding:18px 20px 28px;display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap}
+h1{font:600 22px/1.1 "IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;margin:0;letter-spacing:.01em}
+.sub{color:var(--ink2);margin:4px 0 0;max-width:70ch}
+.tabs{display:flex;gap:6px}
+.tab{border:1px solid var(--rule);background:var(--panel);color:var(--ink2);padding:6px 12px;border-radius:4px;cursor:pointer;font:500 13px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.03em;text-transform:uppercase}
+.tab[aria-selected="true"]{color:var(--ink);border-color:var(--flown);box-shadow:inset 0 -2px 0 var(--flown)}
+.tab:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.verdicts{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:999px;border:1px solid var(--rule);background:var(--panel);font-size:13px}
+.chip b{font:500 11px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+.chip .dot{width:9px;height:9px;border-radius:50%;background:var(--good)}
+.chip.bad .dot{background:var(--bad)}
+.chip .v{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:minmax(420px,1.15fr) minmax(360px,1fr);gap:14px}
+@media (max-width:980px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:10px 12px 12px}
+.panel h2{font:600 13px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);margin:0 0 6px;display:flex;justify-content:space-between;gap:8px}
+.legend{display:flex;gap:12px;font:400 12px "IBM Plex Sans",sans-serif;color:var(--ink2);text-transform:none;letter-spacing:0}
+.legend i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
+.legend i.dash{border-top-style:dashed}
+canvas{display:block;width:100%}
+#map{aspect-ratio:1/1;cursor:crosshair}
+.strips{display:flex;flex-direction:column;gap:8px}
+.strip canvas{height:118px;cursor:col-resize}
+.transport{display:grid;grid-template-columns:auto auto 1fr auto;gap:10px;align-items:center}
+button{font:500 13px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--rule);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:4px;cursor:pointer}
+button:hover{border-color:var(--flown)}
+select{font:inherit;border:1px solid var(--rule);background:var(--panel);color:var(--ink);padding:5px 8px;border-radius:4px}
+input[type=range]{width:100%;accent-color:var(--flown)}
+.tval{font:500 15px "IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;min-width:8ch;text-align:right}
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:6px 14px;margin-top:8px}
+.readout div{border-top:1px solid var(--rule);padding-top:4px}
+.readout b{display:block;font:500 11px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+.readout span{font:500 15px "IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+.phase{font:500 12px "IBM Plex Sans Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--rule);color:var(--ink2)}
+.phase.final{border-color:var(--cmd);color:var(--cmd)}
+.phase.roll{border-color:var(--roll);color:var(--roll)}
+.note{color:var(--muted);font-size:12px}
+#view3d{aspect-ratio:2.3/1;cursor:grab;touch-action:none}
+#view3d:active{cursor:grabbing}
+.ctl3d{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--ink2);margin-top:6px}
+.ctl3d label{display:flex;gap:6px;align-items:center}
+.ctl3d input[type=range]{width:140px}
+@media (prefers-reduced-motion: reduce){ .tab{transition:none} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Corridor Landing Replay</h1>
+      <p class="sub">DHC-2 Beaver 6-DOF, pattern nominal only (no barrier rows yet). Scrub the run over the terrain map; every strip follows the cursor. The first three tabs land; the <em>fail</em> tabs are built so the nominal alone does not — each is the ground truth a barrier row from the roadmap has to flip.</p>
+    </div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+  </header>
+
+  <div class="verdicts" id="verdicts"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Ground track, north up <span class="legend"><span><i style="border-color:var(--ref)" class="dash"></i>planned</span><span><i style="border-color:var(--flown)"></i>flown</span><span><i style="border-color:var(--roll)"></i>rollout</span><span><i style="border-color:var(--cmd)"></i>L1 lookahead</span></span></h2>
+      <canvas id="map" width="900" height="900" aria-label="Ground track over terrain"></canvas>
+      <p class="note" id="mapnote"></p>
+    </div>
+    <div class="strips" id="strips"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Altitude over the obstacles, perspective view <span class="legend"><span><i style="border-color:var(--flown)"></i>flown</span><span><i style="border-color:var(--ref)" class="dash"></i>ground shadow</span><span><i style="border-color:var(--td)"></i>drop line at cursor</span></span></h2>
+    <canvas id="view3d" width="1380" height="600" aria-label="Perspective view of the track over the terrain"></canvas>
+    <div class="ctl3d">
+      <span>Drag to orbit, wheel to zoom.</span>
+      <label>Vertical exaggeration <input type="range" id="exag" min="1" max="6" step="0.5" value="2.5"> <span id="exagv" class="v">2.5×</span></label>
+      <button id="resetview">Reset view</button>
+      <span id="clr3d" class="note"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="transport">
+      <button id="play" aria-label="Play or pause">Play</button>
+      <select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="10">10×</option></select>
+      <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="Time cursor">
+      <div class="tval" id="tval">0.0 s</div>
+    </div>
+    <div class="readout" id="readout"></div>
+  </div>
+</div>
+
+<script>
+const RUNS = /*__RUNS__*/;
+const DEG = Math.PI/180;
+const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+let run = RUNS[0], cur = 0, playing = false, lastTs = 0;
+
+// ---------- helpers ----------
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+function corrFrame(c, N, E){ const cs=Math.cos(c.heading), sn=Math.sin(c.heading); const dN=N-c.N, dE=E-c.E; return [dN*cs+dE*sn, dE*cs-dN*sn]; }
+function corrInv(c, s, e){ const cs=Math.cos(c.heading), sn=Math.sin(c.heading); return [c.N + s*cs - e*sn, c.E + s*sn + e*cs]; }
+function inside(c, N, E){ const [s,e]=corrFrame(c,N,E); return Math.abs(s)<=c.length/2 && Math.abs(e)<=c.width/2; }
+function terrainH(tr, N, E){ let h=tr.base; for(const b of tr.bumps){ const [N0,E0,A,sa,sb,rot,ord]=b; const c=Math.cos(rot), s=Math.sin(rot); const dN=N-N0, dE=E-E0; const xa=(dN*c+dE*s)/sa, xb=(dE*c-dN*s)/sb; let q=xa*xa+xb*xb, qp=q; for(let k=1;k<ord;k++) qp*=q; h+=A*Math.exp(-qp);} return h; }
+function hex2rgb(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+function lerp(a,b,t){ return a+(b-a)*t; }
+
+// ---------- per-run derived ----------
+function prepare(r){
+  const d=r.data, n=d.t.length, c=r.corridor;
+  const poly=[[-c.length/2,-c.width/2],[c.length/2,-c.width/2],[c.length/2,c.width/2],[-c.length/2,c.width/2]].map(([s,e])=>corrInv(c,s,e));
+  let Nlo=Infinity,Nhi=-Infinity,Elo=Infinity,Ehi=-Infinity;
+  const push=(N,E)=>{Nlo=Math.min(Nlo,N);Nhi=Math.max(Nhi,N);Elo=Math.min(Elo,E);Ehi=Math.max(Ehi,E);};
+  for(let i=0;i<n;i++) push(d.x[i],d.y[i]);
+  for(const p of poly) push(p[0],p[1]);
+  const pad=250; Nlo-=pad;Nhi+=pad;Elo-=pad;Ehi+=pad;
+  const span=Math.max(Nhi-Nlo,Ehi-Elo); const Nc=(Nlo+Nhi)/2, Ec=(Elo+Ehi)/2;
+  r.view={Nlo:Nc-span/2,Nhi:Nc+span/2,Elo:Ec-span/2,Ehi:Ec+span/2,span};
+  r.poly=poly;
+  // verdicts
+  const td=r.td_index; const s_e=corrFrame(c,d.x[td],d.y[td]);
+  r.v={ td_in: inside(c,d.x[td],d.y[td]) && d.hT[td] < 0.05, td_s:s_e[0], td_e:s_e[1],
+        td_dpsi: wrap(d.psi_deg[td]*DEG - c.heading)/DEG, sink: d.sink[td], V: d.V_air[td] };
+  let rollInside=null, stayed=true, last=null;
+  for(let i=td+1;i<n;i++){ if(d.phase[i]===1){ last=i; if(!inside(c,d.x[i],d.y[i])) stayed=false; } }
+  if(last!==null){ rollInside=inside(c,d.x[last],d.y[last]); const se=corrFrame(c,d.x[last],d.y[last]); r.v.roll={inside:rollInside,stayed,s:se[0],e:se[1],t:d.t[last]-d.t[td]}; }
+  let minClr=Infinity, maxX=0, maxA=-Infinity, minV=Infinity, sat=0; for(let i=0;i<=td;i++){ if(d.hT[i]>r.terrain.base+0.5) minClr=Math.min(minClr,d.h[i]-d.hT[i]); maxX=Math.max(maxX,d.xte[i]); maxA=Math.max(maxA,d.alpha_deg[i]); minV=Math.min(minV,d.V_air[i]); if(Math.abs(d.phi_cmd_deg[i])>=24.99) sat++; }
+  r.v.minClr=minClr; r.v.maxXte=maxX; r.v.maxAlpha=maxA; r.v.minV=minV; r.v.satFrac=sat/(td+1);
+  r.v.strike = d.hT[td] > 0.05;
+  let act=0, be=0; for(let i=0;i<=td;i++){ act+=d.cbf6_active[i]; be+=d.cbf6_be[i]; } r.v.cbfActive=act/(td+1); r.v.cbfBe=be;
+  r.v.stall = maxA > 16.0;
+  // crab at contact = heading - ground course (course from the last airborne step)
+  const k0=Math.max(0,td-1); const chiTd=Math.atan2(d.y[td]-d.y[k0], d.x[td]-d.x[k0]);
+  r.v.crab = wrap(d.psi_deg[td]*DEG - chiTd)/DEG;
+  r.segMax=Math.max(...d.seg);
+  r.rasterKey=null;
+  // Terrain under the CG is already logged (hT). Add the WORST terrain within
+  // a +/-60 m swath across the ground course (span 14.6 m + margin), so a
+  // tree line beside the track shows up in the profile.
+  const hTs=new Array(n).fill(0), clr=new Array(n).fill(Infinity);
+  for(let i=0;i<n;i++){ const j=Math.min(n-1,i+1), k=Math.max(0,i-1); const chi=Math.atan2(d.y[j]-d.y[k], d.x[j]-d.x[k]); let m=-Infinity;
+    for(const off of [-60,-30,0,30,60]){ m=Math.max(m, terrainH(r.terrain, d.x[i]-off*Math.sin(chi), d.y[i]+off*Math.cos(chi))); }
+    hTs[i]=m; if(d.phase[i]===0) clr[i]=d.h[i]-m; }
+  d.hT_swath=hTs; d.clr_swath=clr;
+  d.de_nom_deg=d.de_nom.map(v=>v/DEG); d.de_deg=d.de.map(v=>v/DEG);
+  let minSw=Infinity, minSwI=0; for(let i=0;i<=td;i++){ if(hTs[i]>r.terrain.base+0.5 && clr[i]<minSw){ minSw=clr[i]; minSwI=i; } }
+  r.v.minSwath=minSw; r.v.minSwathI=minSwI;
+  r.mesh=null;  // perspective-view mesh, built lazily on first draw
+}
+// Terrain mesh for the perspective view (max-of-9 supersampling so 25 m
+// trees survive a ~40 m cell).
+function buildMesh(r){
+  const M=110, v=r.view, mesh=new Float32Array((M+1)*(M+1));
+  for(let j=0;j<=M;j++) for(let i=0;i<=M;i++){ const N=v.Nlo+j/M*v.span, E=v.Elo+i/M*v.span, c=v.span/M/3; let m=-Infinity;
+    for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) m=Math.max(m, terrainH(r.terrain, N+a*c, E+b*c)); mesh[j*(M+1)+i]=m; }
+  r.mesh={M,z:mesh};
+}
+RUNS.forEach(prepare);
+
+// ---------- terrain raster (cached per run + theme) ----------
+function terrainRaster(r, W){
+  const key=W+'|'+css('--t1');
+  if(r.rasterKey===key) return r.raster;
+  const off=document.createElement('canvas'); off.width=W; off.height=W;
+  const ctx=off.getContext('2d'); const img=ctx.createImageData(W,W);
+  const water=hex2rgb(css('--water')); const ramp=[css('--t1'),css('--t2'),css('--t3'),css('--t4')].map(hex2rgb);
+  const v=r.view;
+  for(let j=0;j<W;j++){ const N=v.Nhi-(j+0.5)/W*v.span; for(let i=0;i<W;i++){ const E=v.Elo+(i+0.5)/W*v.span; const h=terrainH(r.terrain,N,E); let col=water;
+    if(h>0.5){ const u=Math.min(1,Math.log10(h/0.5)/Math.log10(600)); const x=u*3, k=Math.min(2,Math.floor(x)), f=x-k; col=[0,1,2].map(q=>lerp(ramp[k][q],ramp[k+1][q],f)); }
+    const o=(j*W+i)*4; img.data[o]=col[0]; img.data[o+1]=col[1]; img.data[o+2]=col[2]; img.data[o+3]=255; } }
+  ctx.putImageData(img,0,0); r.raster=off; r.rasterKey=key; return off;
+}
+
+// ---------- map ----------
+const map=document.getElementById('map');
+function drawMap(){
+  const ctx=map.getContext('2d'); const W=map.width, H=map.height; const v=run.view, d=run.data, c=run.corridor;
+  const X=E=>(E-v.Elo)/v.span*W, Y=N=>(v.Nhi-N)/v.span*H;
+  ctx.clearRect(0,0,W,H);
+  ctx.drawImage(terrainRaster(run,300),0,0,W,H);
+  // grid every 500 m
+  ctx.strokeStyle=css('--rule'); ctx.lineWidth=1; ctx.globalAlpha=.7;
+  const g0N=Math.ceil(v.Nlo/500)*500, g0E=Math.ceil(v.Elo/500)*500;
+  ctx.font='11px "IBM Plex Mono", monospace'; ctx.fillStyle=css('--muted');
+  for(let N=g0N;N<v.Nhi;N+=500){ ctx.beginPath(); ctx.moveTo(0,Y(N)); ctx.lineTo(W,Y(N)); ctx.stroke(); ctx.fillText(N+' m',4,Y(N)-3); }
+  for(let E=g0E;E<v.Ehi;E+=500){ ctx.beginPath(); ctx.moveTo(X(E),0); ctx.lineTo(X(E),H); ctx.stroke(); ctx.fillText(E+' m',X(E)+3,H-6); }
+  ctx.globalAlpha=1;
+  // corridor
+  ctx.beginPath(); run.poly.forEach((p,i)=> i?ctx.lineTo(X(p[1]),Y(p[0])):ctx.moveTo(X(p[1]),Y(p[0]))); ctx.closePath();
+  ctx.fillStyle=css('--corr'); ctx.fill(); ctx.strokeStyle=css('--ink'); ctx.lineWidth=1.5; ctx.stroke();
+  const aimL=corrInv(c,c.aim_s,-c.width/2), aimR=corrInv(c,c.aim_s,c.width/2);
+  ctx.strokeStyle=css('--td'); ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(X(aimL[1]),Y(aimL[0])); ctx.lineTo(X(aimR[1]),Y(aimR[0])); ctx.stroke(); ctx.setLineDash([]);
+  // planned path (lookahead trace, airborne)
+  ctx.strokeStyle=css('--ref'); ctx.lineWidth=1.2; ctx.setLineDash([6,5]); ctx.beginPath();
+  for(let i=0;i<=run.td_index;i++){ const x=X(d.E_ref[i]), y=Y(d.N_ref[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); } ctx.stroke(); ctx.setLineDash([]);
+  // full flown track (faint), then progressed part
+  const trk=(a,b,color,lw,alpha)=>{ ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.globalAlpha=alpha; ctx.beginPath(); for(let i=a;i<=b;i++){ const x=X(d.y[i]),y=Y(d.x[i]); i===a?ctx.moveTo(x,y):ctx.lineTo(x,y);} ctx.stroke(); ctx.globalAlpha=1; };
+  const n=d.t.length-1, td=run.td_index;
+  trk(0,td,css('--flown'),1.5,.3); if(n>td) trk(td,n,css('--roll'),2.2,.3);
+  const upto=Math.min(cur,td); trk(0,upto,css('--flown'),2.2,1); if(cur>td) trk(td,cur,css('--roll'),3,1);
+  // touchdown + stop markers
+  const mark=(N,E,color,shape)=>{ ctx.fillStyle=color; ctx.strokeStyle=css('--panel'); ctx.lineWidth=1.5; const x=X(E),y=Y(N); ctx.beginPath(); if(shape==='tri'){ ctx.moveTo(x,y+7); ctx.lineTo(x-6,y-5); ctx.lineTo(x+6,y-5);} else ctx.rect(x-5,y-5,10,10); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+  if(cur>=td) mark(d.x[td],d.y[td],css('--td'),'tri');
+  if(cur>=n && n>td) mark(d.x[n],d.y[n],css('--roll'),'sq');
+  // lookahead point + line
+  if(cur<=td){ ctx.strokeStyle=css('--cmd'); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(X(d.y[cur]),Y(d.x[cur])); ctx.lineTo(X(d.E_ref[cur]),Y(d.N_ref[cur])); ctx.stroke();
+    ctx.beginPath(); ctx.arc(X(d.E_ref[cur]),Y(d.N_ref[cur]),5,0,Math.PI*2); ctx.strokeStyle=css('--cmd'); ctx.lineWidth=2; ctx.stroke(); }
+  // aircraft glyph (heading psi)
+  const psi=d.psi_deg[cur]*DEG, x=X(d.y[cur]), y=Y(d.x[cur]);
+  ctx.save(); ctx.translate(x,y); ctx.rotate(psi); // canvas: +x east, +y south; heading 0 = north = -y
+  ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(4,-2); ctx.lineTo(12,2); ctx.lineTo(12,5); ctx.lineTo(3,3); ctx.lineTo(2,8); ctx.lineTo(5,10); ctx.lineTo(5,12); ctx.lineTo(0,10); ctx.lineTo(-5,12); ctx.lineTo(-5,10); ctx.lineTo(-2,8); ctx.lineTo(-3,3); ctx.lineTo(-12,5); ctx.lineTo(-12,2); ctx.lineTo(-4,-2); ctx.closePath();
+  ctx.fillStyle=cur>td?css('--roll'):css('--flown'); ctx.strokeStyle=css('--panel'); ctx.lineWidth=1.5; ctx.fill(); ctx.stroke(); ctx.restore();
+  // scale bar
+  const sb=500/v.span*W; ctx.strokeStyle=css('--ink'); ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(W-sb-16,H-18); ctx.lineTo(W-16,H-18); ctx.stroke();
+  ctx.fillStyle=css('--ink'); ctx.font='12px "IBM Plex Mono", monospace'; ctx.textAlign='right'; ctx.fillText('500 m',W-16,H-24); ctx.textAlign='left';
+}
+
+// ---------- strips ----------
+const STRIPS=[
+  {id:'prof', title:'Vertical profile along the path (distance to aim point)', unit:'m', xkey:'L_to_go', airOnlyX:true, series:[{k:'h',c:'--flown',lbl:'altitude'},{k:'hT_swath',c:'--t4',fill:true,lbl:'worst terrain ±60 m'},{k:'hT',c:'--t2',lbl:'terrain under CG'},{k:'h_gs',c:'--cmd',dash:true,lbl:'cone'}]},
+  {id:'alt', title:'Altitude vs glideslope cone (time)', unit:'m', series:[{k:'h',c:'--flown',lbl:'h'},{k:'h_gs',c:'--cmd',dash:true,lbl:'h_gs (cone)'},{k:'hT',c:'--t3',fill:true,lbl:'terrain under track'}]},
+  {id:'bank', title:'Bank command tracking, sideslip', unit:'deg', series:[{k:'phi_deg',c:'--flown',lbl:'φ'},{k:'phi_cmd_deg',c:'--cmd',dash:true,lbl:'φ cmd (L1)'},{k:'beta_deg',c:'--ref',lbl:'β'}], zero:true},
+  {id:'xte', title:'Cross-track to path; e in corridor frame on final', unit:'m', series:[{k:'xte',c:'--flown',lbl:'to path'},{k:'e_corr',c:'--roll',lbl:'e (final + rollout)',finalOnly:true}], zero:true},
+  {id:'spd', title:'Airspeed; ground speed on the water', unit:'m/s', series:[{k:'V_air',c:'--flown',lbl:'V air',airOnly:true},{k:'Vg',c:'--roll',lbl:'Vg rollout',rollOnly:true}]},
+  {id:'gam', title:'Flight-path angle', unit:'deg', series:[{k:'gamma_deg',c:'--cmd',lbl:'γ',airOnly:true}], refline:'gamma_app', zero:true},
+  {id:'cbf', title:'6-DOF CBF: elevator nominal vs applied, barrier h (α, φ)', unit:'deg', series:[{k:'h6_alpha',c:'--td',lbl:'h α',airOnly:true},{k:'h6_phi',c:'--roll',lbl:'h φ',airOnly:true},{k:'de_nom_deg',c:'--cmd',dash:true,lbl:'δe nominal',airOnly:true},{k:'de_deg',c:'--flown',lbl:'δe applied',airOnly:true}], zero:true},
+];
+const stripsEl=document.getElementById('strips');
+STRIPS.forEach(s=>{ const p=document.createElement('div'); p.className='panel strip'; p.innerHTML=`<h2>${s.title} <span class="legend">${s.series.map(q=>`<span><i style="border-color:var(${q.c})" class="${q.dash?'dash':''}"></i>${q.lbl}</span>`).join('')}</span></h2><canvas id="c_${s.id}" width="700" height="118"></canvas>`; stripsEl.appendChild(p);
+  const cv=p.querySelector('canvas'); const seek=e=>{ const r=cv.getBoundingClientRect(); const f=(e.clientX-r.left)/r.width; const n=s.airOnlyX?run.td_index:(run.data.t.length-1); setCursor(Math.round(f*n)); };
+  cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId); seek(e);}); cv.addEventListener('pointermove',e=>{ if(e.buttons) seek(e); });
+});
+function seriesMask(q,i){ const d=run.data; if(q.finalOnly) return d.phase[i]===1 || d.seg[i]===run.segMax; if(q.airOnly) return d.phase[i]===0; if(q.rollOnly) return d.phase[i]===1; return true; }
+function drawStrip(s){
+  const cv=document.getElementById('c_'+s.id), ctx=cv.getContext('2d'); const W=cv.width,H=cv.height; const d=run.data, n0=d.t.length; const L=44,R=8,T=8,B=18;
+  const n = s.airOnlyX ? run.td_index+1 : n0;           // distance axis: airborne rows only
+  const xs = s.xkey ? d[s.xkey] : d.t;
+  ctx.clearRect(0,0,W,H);
+  let lo=Infinity,hi=-Infinity; for(const q of s.series) for(let i=0;i<n;i++){ if(!seriesMask(q,i)) continue; lo=Math.min(lo,d[q.k][i]); hi=Math.max(hi,d[q.k][i]); }
+  if(s.refline) { lo=Math.min(lo,run[s.refline]); hi=Math.max(hi,run[s.refline]); }
+  if(s.zero||s.xkey){lo=Math.min(lo,0);hi=Math.max(hi,0);} if(hi-lo<1e-6){hi=lo+1;} const padv=(hi-lo)*.08; lo-=padv; hi+=padv;
+  const t0=xs[0], t1=xs[n-1]; const X=t=>L+(t-t0)/(t1-t0)*(W-L-R), Y=v=>T+(hi-v)/(hi-lo)*(H-T-B);
+  ctx.strokeStyle=css('--rule'); ctx.lineWidth=1; ctx.fillStyle=css('--muted'); ctx.font='10px "IBM Plex Mono", monospace';
+  const ticks=[lo+padv, (lo+hi)/2, hi-padv]; for(const v of ticks){ ctx.beginPath(); ctx.moveTo(L,Y(v)); ctx.lineTo(W-R,Y(v)); ctx.stroke(); ctx.textAlign='right'; ctx.fillText(v.toFixed(Math.abs(hi-lo)<10?1:0),L-4,Y(v)+3); }
+  ctx.textAlign='center';
+  if(s.xkey){ const step = Math.abs(t1-t0)>3000?1000:500; const a=Math.min(t0,t1), b=Math.max(t0,t1); for(let t=Math.ceil(a/step)*step;t<=b;t+=step) ctx.fillText(t+' m',X(t),H-5); }
+  else for(let t=Math.ceil(t0/20)*20;t<=t1;t+=20) ctx.fillText(t+' s',X(t),H-5);
+  ctx.textAlign='left'; ctx.fillText(s.unit,L,T+8);
+  if(s.zero){ ctx.strokeStyle=css('--ink2'); ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(L,Y(0)); ctx.lineTo(W-R,Y(0)); ctx.stroke(); ctx.globalAlpha=1; }
+  if(s.refline){ ctx.strokeStyle=css('--cmd'); ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(L,Y(run[s.refline])); ctx.lineTo(W-R,Y(run[s.refline])); ctx.stroke(); ctx.setLineDash([]); }
+  // touchdown marker
+  const td=run.td_index; ctx.strokeStyle=css('--td'); ctx.setLineDash([2,3]); ctx.beginPath(); ctx.moveTo(X(xs[td]),T); ctx.lineTo(X(xs[td]),H-B); ctx.stroke(); ctx.setLineDash([]);
+  for(const q of s.series){ ctx.strokeStyle=css(q.c); ctx.lineWidth=q.k==='beta_deg'||q.k==='hT'?1:1.8; if(q.dash) ctx.setLineDash([5,4]);
+    if(q.fill){ ctx.fillStyle=css(q.c); ctx.globalAlpha=.45; ctx.beginPath(); ctx.moveTo(X(xs[0]),Y(0)); for(let i=0;i<n;i++) ctx.lineTo(X(xs[i]),Y(d[q.k][i])); ctx.lineTo(X(xs[n-1]),Y(0)); ctx.closePath(); ctx.fill(); ctx.globalAlpha=1; continue; }
+    ctx.beginPath(); let pen=false; for(let i=0;i<n;i++){ if(!seriesMask(q,i)){pen=false;continue;} const x=X(xs[i]),y=Y(d[q.k][i]); pen?ctx.lineTo(x,y):ctx.moveTo(x,y); pen=true; } ctx.stroke(); ctx.setLineDash([]); }
+  // cursor
+  const ci = Math.min(cur, n-1);
+  ctx.strokeStyle=css('--ink'); ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(X(xs[ci]),T); ctx.lineTo(X(xs[ci]),H-B); ctx.stroke();
+  for(const q of s.series){ if(q.fill||!seriesMask(q,ci)) continue; ctx.fillStyle=css(q.c); ctx.beginPath(); ctx.arc(X(xs[ci]),Y(d[q.k][ci]),3.5,0,Math.PI*2); ctx.fill(); }
+  if(s.xkey && isFinite(d.clr_swath[ci])){ ctx.fillStyle=css('--ink'); ctx.font='11px "IBM Plex Mono", monospace'; ctx.textAlign='left'; ctx.fillText(`clearance ${d.clr_swath[ci].toFixed(1)} m (swath), ${(d.h[ci]-d.hT[ci]).toFixed(1)} m (CG)`, L+6, T+22); }
+}
+
+// ---------- perspective view ----------
+const v3=document.getElementById('view3d');
+const cam={yaw:-35*DEG, pitch:28*DEG, zoom:1.0};
+let terrainCache=null, terrainKey='';
+function exag(){ return +document.getElementById('exag').value; }
+function project(N,E,h){
+  // world: x = E, y = N, z = h*exag; orbit camera about the view centre.
+  const v=run.view; const x=E-(v.Elo+v.Ehi)/2, y=N-(v.Nlo+v.Nhi)/2, z=h*exag();
+  const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw); const x1=x*cy - y*sy, y1=x*sy + y*cy;   // yaw about z
+  const cp=Math.cos(cam.pitch), sp=Math.sin(cam.pitch); const y2=y1*cp + z*sp, z2=-y1*sp + z*cp; // pitch about x
+  const dist=v.span*1.6/cam.zoom; const depth=dist - y2; const f=v3.height*1.15;
+  return [v3.width/2 + f*x1/depth, v3.height*0.62 - f*z2/depth, depth];
+}
+function drawTerrain3d(){
+  const key=[run.name,cam.yaw,cam.pitch,cam.zoom,exag(),css('--t1')].join('|');
+  if(terrainKey===key) return terrainCache;
+  if(!run.mesh) buildMesh(run);
+  const off=document.createElement('canvas'); off.width=v3.width; off.height=v3.height; const ctx=off.getContext('2d');
+  const v=run.view, M=run.mesh.M, z=run.mesh.z; const ramp=[css('--t1'),css('--t2'),css('--t3'),css('--t4')].map(hex2rgb); const water=hex2rgb(css('--water'));
+  const P=new Array((M+1)*(M+1)); for(let j=0;j<=M;j++) for(let i=0;i<=M;i++){ P[j*(M+1)+i]=project(v.Nlo+j/M*v.span, v.Elo+i/M*v.span, z[j*(M+1)+i]); }
+  const quads=[]; for(let j=0;j<M;j++) for(let i=0;i<M;i++){ const a=j*(M+1)+i, b=a+1, c=a+M+1, dd=c+1; const hmax=Math.max(z[a],z[b],z[c],z[dd]); quads.push([(P[a][2]+P[b][2]+P[c][2]+P[dd][2])/4, a,b,dd,c,hmax]); }
+  quads.sort((p,q)=>q[0]-p[0]);
+  for(const q of quads){ const h=q[5]; let col=water; let alpha=1;
+    if(h>0.5){ const u=Math.min(1,Math.log10(h/0.5)/Math.log10(600)); const x=u*3, k=Math.min(2,Math.floor(x)), f=x-k; col=[0,1,2].map(t=>lerp(ramp[k][t],ramp[k+1][t],f)); }
+    // simple shading from the quad's slope along the light direction (from the west)
+    const shade = h>0.5 ? Math.max(.7, Math.min(1.15, 1 + (z[q[1]]-z[q[2]])/60)) : 1;
+    ctx.fillStyle=`rgb(${(col[0]*shade)|0},${(col[1]*shade)|0},${(col[2]*shade)|0})`; ctx.globalAlpha=alpha;
+    ctx.beginPath(); ctx.moveTo(P[q[1]][0],P[q[1]][1]); ctx.lineTo(P[q[2]][0],P[q[2]][1]); ctx.lineTo(P[q[3]][0],P[q[3]][1]); ctx.lineTo(P[q[4]][0],P[q[4]][1]); ctx.closePath(); ctx.fill();
+    if(h>0.5){ ctx.strokeStyle='rgba(0,0,0,.08)'; ctx.lineWidth=.5; ctx.stroke(); } }
+  // corridor on the water
+  ctx.strokeStyle=css('--ink'); ctx.lineWidth=1.5; ctx.beginPath(); run.poly.forEach((p,i)=>{ const q=project(p[0],p[1],0.3); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }); ctx.closePath(); ctx.stroke();
+  ctx.fillStyle=css('--corr'); ctx.fill();
+  terrainCache=off; terrainKey=key; return off;
+}
+function draw3d(){
+  const ctx=v3.getContext('2d'); const W=v3.width,H=v3.height; const d=run.data, td=run.td_index, n=d.t.length-1;
+  ctx.clearRect(0,0,W,H); ctx.drawImage(drawTerrain3d(),0,0);
+  // ground shadow of the flown track
+  ctx.strokeStyle=css('--ref'); ctx.lineWidth=1; ctx.setLineDash([4,4]); ctx.beginPath(); for(let i=0;i<=td;i++){ const p=project(d.x[i],d.y[i],0.5); i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); } ctx.stroke(); ctx.setLineDash([]);
+  // flown (faint full, solid to cursor); rollout on the water
+  const poly=(a,b,color,lw,alpha,hfn)=>{ ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.globalAlpha=alpha; ctx.beginPath(); for(let i=a;i<=b;i++){ const p=project(d.x[i],d.y[i],hfn(i)); i===a?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]); } ctx.stroke(); ctx.globalAlpha=1; };
+  poly(0,td,css('--flown'),1.5,.35,i=>d.h[i]); if(n>td) poly(td,n,css('--roll'),2.5,.35,()=>0.5);
+  poly(0,Math.min(cur,td),css('--flown'),2.5,1,i=>d.h[i]); if(cur>td) poly(td,cur,css('--roll'),3,1,()=>0.5);
+  // drop line + aircraft at the cursor
+  const i=cur; const hA=cur>td?0.5:d.h[i]; const top=project(d.x[i],d.y[i],hA), base=project(d.x[i],d.y[i],d.hT[i]);
+  if(cur<=td){ ctx.strokeStyle=css('--td'); ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(top[0],top[1]); ctx.lineTo(base[0],base[1]); ctx.stroke();
+    ctx.fillStyle=css('--ink'); ctx.font='12px "IBM Plex Mono", monospace'; ctx.textAlign='left'; ctx.fillText(`${(d.h[i]-d.hT[i]).toFixed(0)} m above ground`, top[0]+8, (top[1]+base[1])/2); }
+  ctx.fillStyle=cur>td?css('--roll'):css('--flown'); ctx.strokeStyle=css('--panel'); ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(top[0],top[1],5,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  // touchdown marker
+  if(cur>=td){ const p=project(d.x[td],d.y[td],d.hT[td]+0.5); ctx.fillStyle=css('--td'); ctx.beginPath(); ctx.moveTo(p[0],p[1]+7); ctx.lineTo(p[0]-6,p[1]-5); ctx.lineTo(p[0]+6,p[1]-5); ctx.closePath(); ctx.fill(); }
+  // north arrow
+  const c0=project((run.view.Nlo+run.view.Nhi)/2,(run.view.Elo+run.view.Ehi)/2,0), c1=project((run.view.Nlo+run.view.Nhi)/2+run.view.span*0.12,(run.view.Elo+run.view.Ehi)/2,0);
+  const ax=W-70, ay=H-40, dx=c1[0]-c0[0], dy=c1[1]-c0[1], L=Math.hypot(dx,dy)||1;
+  ctx.strokeStyle=css('--ink'); ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(ax+28*dx/L,ay+28*dy/L); ctx.stroke(); ctx.fillStyle=css('--ink'); ctx.font='12px "IBM Plex Mono", monospace'; ctx.fillText('N',ax+34*dx/L-4,ay+34*dy/L+4);
+  const vv=run.v; document.getElementById('clr3d').textContent = isFinite(vv.minSwath) ? `Closest approach to terrain (±60 m swath): ${vv.minSwath.toFixed(1)} m at t = ${d.t[vv.minSwathI].toFixed(1)} s` : 'Never over terrain.';
+}
+(function(){ let drag=null;
+  v3.addEventListener('pointerdown',e=>{ drag={x:e.clientX,y:e.clientY,yaw:cam.yaw,pitch:cam.pitch}; v3.setPointerCapture(e.pointerId); });
+  v3.addEventListener('pointermove',e=>{ if(!drag) return; cam.yaw=drag.yaw+(e.clientX-drag.x)*0.008; cam.pitch=Math.max(5*DEG,Math.min(85*DEG,drag.pitch+(e.clientY-drag.y)*0.006)); draw3d(); });
+  v3.addEventListener('pointerup',()=>{drag=null;}); v3.addEventListener('pointercancel',()=>{drag=null;});
+  v3.addEventListener('wheel',e=>{ e.preventDefault(); cam.zoom=Math.max(.5,Math.min(4,cam.zoom*(e.deltaY<0?1.1:0.9))); draw3d(); },{passive:false});
+  document.getElementById('exag').addEventListener('input',e=>{ document.getElementById('exagv').textContent=(+e.target.value).toFixed(1)+'×'; draw3d(); });
+  document.getElementById('resetview').onclick=()=>{ cam.yaw=-35*DEG; cam.pitch=28*DEG; cam.zoom=1; draw3d(); };
+})();
+
+// ---------- readout / verdicts / tabs ----------
+const f1=v=>v.toFixed(1), f2=v=>v.toFixed(2);
+function drawReadout(){
+  const d=run.data, i=cur; const td=run.td_index; const ph= i>td ? '<span class="phase roll">rollout</span>' : (d.seg[i]===run.segMax ? '<span class="phase final">final</span>' : '<span class="phase">pattern</span>');
+  const [s,e]=corrFrame(run.corridor,d.x[i],d.y[i]);
+  const items = i>td ? [['phase',ph],['N',f1(d.x[i])+' m'],['E',f1(d.y[i])+' m'],['course',f1(d.psi_deg[i])+'°'],['ground speed',f1(d.Vg[i])+' m/s'],['s (corridor)',f1(s)+' m'],['e (corridor)',f2(e)+' m']]
+    : [['phase',ph],['N',f1(d.x[i])+' m'],['E',f1(d.y[i])+' m'],['altitude',f1(d.h[i])+' m'],['terrain under CG',f1(d.hT[i])+' m'],['clearance ±60 m',f1(d.clr_swath[i])+' m'],['heading ψ',f1(d.psi_deg[i])+'°'],['bank φ / cmd',f1(d.phi_deg[i])+' / '+f1(d.phi_cmd_deg[i])+'°'],['sideslip β',f2(d.beta_deg[i])+'°'],['airspeed',f1(d.V_air[i])+' m/s'],['γ',f2(d.gamma_deg[i])+'°'],['to aim point',f1(d.L_to_go[i])+' m'],['to path',f1(d.xte[i])+' m'],['e (corridor)',f1(e)+' m']];
+  document.getElementById('readout').innerHTML=items.map(([k,v])=>`<div><b>${k}</b><span>${v}</span></div>`).join('');
+  document.getElementById('tval').textContent=f1(d.t[i])+' s';
+}
+function drawVerdicts(){
+  const v=run.v, c=run.corridor; const chip=(ok,label,val)=>`<span class="chip ${ok?'':'bad'}"><span class="dot"></span><b>${label}</b><span class="v">${val}</span></span>`;
+  let h = v.strike ? chip(false,'contact',`TERRAIN STRIKE  h_T ${f1(run.data.hT[run.td_index])} m`)
+                   : chip(v.td_in,'touchdown',(v.td_in?'in corridor':'OUTSIDE')+`  s ${f1(v.td_s)} m  e ${f1(v.td_e)} m`);
+  if(!v.strike) h+=chip(v.sink<3.5 && Math.abs(v.crab)<10,'contact',`sink ${f2(v.sink)} m/s  V ${f1(v.V)} m/s  crab ${f1(v.crab)}°`);
+  if(v.roll) h+=chip(v.roll.inside&&v.roll.stayed,'rollout',`${v.roll.inside?'stopped inside':'stopped OUTSIDE'}${v.roll.stayed?'':', left corridor'}  s ${f1(v.roll.s)} m  e ${f1(v.roll.e)} m  ${f1(v.roll.t)} s`);
+  h+=chip(v.minSwath>5,'obstacles',isFinite(v.minSwath)?`closest ${f1(v.minSwath)} m (±60 m swath), ${f1(v.minClr)} m under CG`:'never over terrain');
+  h+=chip(v.maxXte<60 && v.satFrac<0.1,'path tracking',`max ${f1(v.maxXte)} m off path  bank limit ${(100*v.satFrac).toFixed(0)}% of flight`);
+  h+=chip(!v.stall && v.minV>30,'envelope',(v.stall?'STALL REGION ENTERED  ':'')+`α max ${f1(v.maxAlpha)}°  V min ${f1(v.minV)} m/s`);
+  if(run.cbf && run.cbf.enabled) h+=chip(v.cbfBe===0,'6-dof cbf',`${run.cbf.filter===false?'monitor only':'filtering'}  active ${(100*v.cbfActive).toFixed(0)}% of steps  best-effort ${v.cbfBe}`);
+  document.getElementById('verdicts').innerHTML=h;
+  const w=run.wind&&run.wind.enabled? `Steady east wind ${run.wind.v_amp} m/s (plant-side, unmeasured). `:'';
+  document.getElementById('mapnote').textContent=`${w}Start h0 = ${run.h0} m, V_app = ${run.V_app} m/s, γ_app = ${run.gamma_app}°. Terrain ramp is logarithmic (0.5 m to 600 m). Dashed line across the corridor marks the aim point.`;
+}
+const tabs=document.getElementById('tabs');
+RUNS.forEach((r,i)=>{ const b=document.createElement('button'); b.className='tab'; b.role='tab'; b.textContent=r.name; b.setAttribute('aria-selected',i===0); b.onclick=()=>selectRun(i); tabs.appendChild(b); });
+function selectRun(i){ run=RUNS[i]; [...tabs.children].forEach((b,k)=>b.setAttribute('aria-selected',k===i)); playing=false; document.getElementById('play').textContent='Play'; const sc=document.getElementById('scrub'); sc.max=run.data.t.length-1; drawVerdicts(); setCursor(0); }
+function redraw(){ drawMap(); STRIPS.forEach(drawStrip); draw3d(); drawReadout(); }
+function setCursor(i){ cur=Math.max(0,Math.min(run.data.t.length-1,i)); document.getElementById('scrub').value=cur; redraw(); }
+document.getElementById('scrub').addEventListener('input',e=>setCursor(+e.target.value));
+const playBtn=document.getElementById('play');
+playBtn.onclick=()=>{ playing=!playing; playBtn.textContent=playing?'Pause':'Play'; if(playing){ if(cur>=run.data.t.length-1) cur=0; lastTs=performance.now(); requestAnimationFrame(tick);} };
+function tick(ts){ if(!playing) return; const sp=+document.getElementById('speed').value; const dtReal=(ts-lastTs)/1000; lastTs=ts; const d=run.data; let target=d.t[cur]+dtReal*sp; let i=cur; while(i<d.t.length-1 && d.t[i+1]<=target) i++; if(i===cur && cur<d.t.length-1) i=cur+1; setCursor(i); if(cur>=d.t.length-1){ playing=false; playBtn.textContent='Play'; return; } requestAnimationFrame(tick); }
+document.addEventListener('keydown',e=>{ if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return; if(e.key===' '){e.preventDefault();playBtn.click();} if(e.key==='ArrowRight') setCursor(cur+(e.shiftKey?20:1)); if(e.key==='ArrowLeft') setCursor(cur-(e.shiftKey?20:1)); });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',redraw);
+new MutationObserver(redraw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+selectRun(0);
+</script>

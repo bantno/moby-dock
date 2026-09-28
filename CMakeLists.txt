@@ -172,6 +172,7 @@ add_executable(unit_tests
   test/test_beaver_lon.cpp
   test/test_beaver_dynamics.cpp
   test/test_tecs.cpp
+  test/test_energy_reach.cpp
   test/test_world_geometry.cpp
   test/test_pattern_guidance.cpp
   test/test_sixdof_cbf.cpp

@@ -1,0 +1,84 @@
+# =============================================================================
+# DHC-2 Beaver corridor landing -- CBF CASE: tight pattern, hard bank row (A/B of fail_tight_pattern)
+#
+# The planner is told to use a 300 m radius (k_R 1.0, phi_plan 28 deg) while
+# the guidance bank limit stays 25 deg: the arcs need 29 deg of bank, the
+# tracker saturates, overshoots every turn and arrives off axis.
+#
+# Nominal-only signature: the bank command sits at the limit for ~25 % of the
+# flight and the flown bank overshoots it; the tracker still arrives (47 m
+# max cross-track). Barrier row: Phase 1 bank row bounds the flown bank HARD
+# regardless of what the tracker asks (today only the command is clamped),
+# and the Phase 3 cross-track funnel catches the overshoot on final.
+# Base: beaver_corridor_overhead.yaml (overhead entry, opposite heading).
+# Nominal-only outcome is pinned by test_sixdof_sim.cpp [corridor][baseline]
+# so the CBF phases have a ground truth to flip.
+# =============================================================================
+
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 1800.0
+  pz_idle: 5.0
+  pz_max: 26.0
+  flap_deg: 0.0
+
+dt: 0.01
+t_max: 300.0
+
+initial:
+  h0: 250.0
+  N0: 0.0
+  E0: 0.0
+  psi_deg: 180.0
+
+nominal:
+  phi_max_deg: 25.0
+
+guidance:
+  phi_plan_deg: 28.0   # TIGHT: needs ~29 deg of bank
+  k_R: 1.0
+  phi_max_deg: 35.0    # the TRACKER may ask for 35; only the barrier holds 25
+
+hull:
+  n_surfaces: 2
+
+world:
+  enabled: true
+  corridor:
+    center_N: 0.0
+    center_E: 0.0
+    length: 700.0        # touchdown + stopping run
+    width: 80.0
+    heading_deg: 0.0     # land toward north
+    aim_s: -200.0        # aim point 150 m inside the near edge
+  terrain:
+    base: 0.0
+    bumps:
+      - {name: mountain, N: 3000.0, E: 900.0, height: 250.0, sigma_a: 400.0, sigma_b: 250.0, rot_deg: 30.0, order: 1}
+      - {name: house_a,  N: -800.0, E: 250.0, height: 8.0,   sigma_a: 6.0,   sigma_b: 6.0,   order: 2}
+      - {name: house_b,  N: -900.0, E: -300.0, height: 8.0,  sigma_a: 6.0,   sigma_b: 10.0,  rot_deg: 45.0, order: 2}
+    rings:
+      - {name: shore_trees, center_N: 0.0, center_E: 0.0, radius: 600.0, count: 48, height: 15.0, sigma: 25.0, order: 2}
+  rollout:
+    enabled: true
+    a0: 0.8              # PLACEHOLDER hydrodynamic decel [m/s^2]
+    kq: 0.002            # PLACEHOLDER quadratic drag [1/m]
+    k_psi: 0.5
+    V_stop: 0.5
+    t_max: 90.0
+
+# 6-DOF surfaces-only CBF: the BANK row is the HARD row for this case (the
+# tracker is allowed to ask for 35 deg; the barrier holds the flown bank at
+# 25); the other envelope rows are soft.
+sixdof_cbf:
+  enabled: true
+  filter: true
+  phi_max_deg: 25.0
+  hard_phi: true
+  alpha_max_deg: 14.0
+  beta_max_deg: 12.0
+  V_min: 30.0
+  V_max: 55.0

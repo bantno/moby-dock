@@ -1,0 +1,70 @@
+# =============================================================================
+# DHC-2 Beaver corridor landing -- NOMINAL-FAILURE CASE: crosswind gust in the turn -> AoA transient
+#
+# An 18 m/s east gust (MIL-F-8785C 1-cosine, 80 m) arrives at t = 22 s, in the
+# first turn of the overhead pattern at 25 deg bank. The sideslip transient
+# feeds the Beaver's beta^2 pitch-up term (Cm_b2 = +0.69) and the angle of
+# attack spikes past the stall line for a moment; the nominal is fine before
+# and after but the run enters the stall region. (Gusts up to 15 m/s stay
+# just under the line; vertical gusts do not produce the excursion.)
+#
+# Barrier row that must flip this case: Phase 1 AoA ceiling (hard, 13.5 deg):
+# clip the transient, land normally.
+# Base: beaver_corridor_overhead.yaml.
+# =============================================================================
+
+plant: beaver
+V_app: 40.0
+gamma_app_deg: -3.5
+
+beaver:
+  n_rpm: 1800.0
+  pz_idle: 5.0
+  pz_max: 26.0
+  flap_deg: 0.0
+
+dt: 0.01
+t_max: 300.0
+
+initial:
+  h0: 250.0
+  N0: 0.0
+  E0: 0.0
+  psi_deg: 180.0
+
+wind:
+  enabled: true
+  t_start: 22.0
+  v_amp: 18.0
+  v_len: 80.0
+
+nominal:
+  phi_max_deg: 25.0
+
+hull:
+  n_surfaces: 2
+
+world:
+  enabled: true
+  corridor:
+    center_N: 0.0
+    center_E: 0.0
+    length: 700.0        # touchdown + stopping run
+    width: 80.0
+    heading_deg: 0.0     # land toward north
+    aim_s: -200.0        # aim point 150 m inside the near edge
+  terrain:
+    base: 0.0
+    bumps:
+      - {name: mountain, N: 3000.0, E: 900.0, height: 250.0, sigma_a: 400.0, sigma_b: 250.0, rot_deg: 30.0, order: 1}
+      - {name: house_a,  N: -800.0, E: 250.0, height: 8.0,   sigma_a: 6.0,   sigma_b: 6.0,   order: 2}
+      - {name: house_b,  N: -900.0, E: -300.0, height: 8.0,  sigma_a: 6.0,   sigma_b: 10.0,  rot_deg: 45.0, order: 2}
+    rings:
+      - {name: shore_trees, center_N: 0.0, center_E: 0.0, radius: 600.0, count: 48, height: 15.0, sigma: 25.0, order: 2}
+  rollout:
+    enabled: true
+    a0: 0.8              # PLACEHOLDER hydrodynamic decel [m/s^2]
+    kq: 0.002            # PLACEHOLDER quadratic drag [1/m]
+    k_psi: 0.5
+    V_stop: 0.5
+    t_max: 90.0

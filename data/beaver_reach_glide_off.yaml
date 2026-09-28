@@ -1,0 +1,18 @@
+# A/B baseline for beaver_reach_glide.yaml: identical layer (idle glide,
+# diving -9 deg nominal, same 3000 m target, h_E logged) but filter: false
+# passes the nominal through -- the vehicle dives, settles fast at a worse
+# L/D, and the barrier collapses to h_E ~ -270 mid-flight.
+plant: beaver
+V_app: 40.0
+t_max: 150.0
+initial:
+  h0: 300.0
+nominal:
+  gamma_ref_deg: -9.0
+energy_cbf:
+  enabled: true
+  filter: false
+  throttle: idle
+  V_min: 30.0
+  target_N: 3000.0
+  ck: 0.01

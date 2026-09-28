@@ -1,0 +1,30 @@
+# Dive-refusal idle glide -- the alpha-channel (L/D-aware) demo.
+#
+# DHC-2 Beaver, dead-stick from 300 m. gamma_app is replaced at load with the
+# plant's own idle-glide slope at 40 m/s (~-6.2 deg, grounding at ~2774 m);
+# the target sits at 3000 m, so the reach margin is thin (h_E(0) ~ +35).
+# The NOMINAL demands a -9 deg dive: settling there means flying fast at a
+# WORSE L/D (Psi ~ 0.158 vs 0.111), which raises the energy needed to reach
+# the target -- exactly the failure the alpha-dependent glide ratio is built
+# to see (the old constant-(L/D)max barrier called the dive free). With the
+# filter on, the CBF refuses the dive and h_E never leaves the safe set;
+# the filter:false twin (beaver_reach_glide_off.yaml) dives and drives
+# h_E ~ -270 mid-flight.
+#
+# ck = 0.01: h_E is CONSERVED along any on-polar glide (the barrier prices the
+# remaining flight at the current alpha's L/D, the same L/D the plant flies),
+# so its natural loss rates are O(1) m^2/s^3 against h_E ~ O(1000) m^2/s^2 --
+# a large class-K gain would let the barrier sleep until the endgame.
+plant: beaver
+V_app: 40.0
+t_max: 150.0
+initial:
+  h0: 300.0
+nominal:
+  gamma_ref_deg: -9.0
+energy_cbf:
+  enabled: true
+  throttle: idle
+  V_min: 30.0
+  target_N: 3000.0
+  ck: 0.01

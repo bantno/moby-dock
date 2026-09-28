@@ -1,0 +1,17 @@
+# A/B baseline for beaver_reach_offset.yaml: filter off, so nobody commands
+# the turn -- the vehicle glides straight along its offset heading, passes
+# abeam of the 2650 m target, and the barrier goes deeply negative.
+plant: beaver
+V_app: 40.0
+t_max: 150.0
+initial:
+  h0: 300.0
+  dpsi_deg: 10.0
+energy_cbf:
+  enabled: true
+  filter: false
+  throttle: idle
+  V_min: 30.0
+  target_N: 2650.0
+  beta_max_deg: 12.0
+  ck: 0.01

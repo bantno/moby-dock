@@ -1,0 +1,27 @@
+# Heading-offset idle glide -- the heading channel (arc-distance) demo.
+#
+# Same dead-stick approach but starting 10 deg off the target bearing, target
+# pulled in to 2650 m. The arc-distance term puts chi in the barrier; the QP
+# commands sideslip (skid-to-turn through Cy_beta, |beta| <= 12 deg ->
+# chi_dot ~ 2.3 deg/s, i.e. a ~1 km minimum "turn radius") and the rudder
+# loop tracks it wings-level. With ck = 0.01 the row binds early enough to
+# start the turn while it is still cheap: h_E never goes negative (min ~ 0+)
+# and the miss shrinks from ~910 m (filter off) to ~250 m.
+#
+# KNOWN LIMITS (see documentation/energy_reach_cbf.md): the skid turn's
+# authority is marginal against km-scale geometry, the plant pays sideslip
+# drag the point-mass model does not price, and a linear class-K with a large
+# gain acts too late to be useful -- ck is the "how early" dial.
+plant: beaver
+V_app: 40.0
+t_max: 150.0
+initial:
+  h0: 300.0
+  dpsi_deg: 10.0
+energy_cbf:
+  enabled: true
+  throttle: idle
+  V_min: 30.0
+  target_N: 2650.0
+  beta_max_deg: 12.0
+  ck: 0.01
