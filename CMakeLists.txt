@@ -112,6 +112,7 @@ add_library(autoland_core
   src/px4_tecs.cpp
   src/energy_reach_cbf.cpp
   src/pattern_guidance.cpp
+  src/sixdof_cbf.cpp
 )
 target_include_directories(autoland_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # autodiff is used in public headers (lie_taylor.hpp), so it must be PUBLIC.
@@ -173,6 +174,7 @@ add_executable(unit_tests
   test/test_tecs.cpp
   test/test_world_geometry.cpp
   test/test_pattern_guidance.cpp
+  test/test_sixdof_cbf.cpp
 )
 target_link_libraries(unit_tests PRIVATE autoland_core Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)
